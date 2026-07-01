@@ -1,0 +1,3330 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bouncing Battle Sim</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; display: flex; justify-content: center; padding: 16px; min-height: 100vh; }
+#app { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; max-width: 700px; }
+
+/* キャラ選択 */
+#char-select { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; }
+#char-select h2 { font-size: 16px; font-weight: 600; color: #eee; }
+.cs-row { display: flex; gap: 24px; align-items: flex-start; }
+.cs-panel { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.cs-label { font-size: 12px; color: #aaa; font-weight: 500; }
+.cs-cards { display: flex; flex-direction: column; gap: 6px; }
+.cs-card { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: 10px; border: 1.5px solid #444; background: #2a2a2a; cursor: pointer; font-size: 13px; color: #eee; transition: border-color 0.15s, background 0.15s; min-width: 150px; }
+.cs-card:hover { background: #333; }
+.cs-card.selected { border-color: #4A9EFF; background: rgba(74,158,255,0.15); }
+.cs-card .cs-emoji { font-size: 22px; }
+.cs-card .cs-name { font-weight: 600; font-size: 13px; }
+.cs-vs { font-size: 20px; font-weight: 700; color: #666; padding-top: 32px; }
+#cs-start { font-size: 14px; padding: 8px 32px; border-radius: 8px; border: none; background: #4A9EFF; color: #fff; cursor: pointer; font-weight: 600; opacity: 0.4; pointer-events: none; transition: opacity 0.2s; }
+#cs-start.ready { opacity: 1; pointer-events: auto; }
+#cs-start.ready:hover { background: #2e86e8; }
+
+/* バトル画面 */
+#battle { display: none; flex-direction: column; align-items: center; gap: 0; width: 100%; }
+#scoreboard { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 650px; max-width: 100%; box-sizing: border-box; background: #1FA5CB; color: #fff; padding: 16px 18px 10px; }
+.sb-title { text-align: center; font-size: 30px; font-weight: 900; letter-spacing: 0.3px; line-height: 1.2; font-family: 'Arial Black', 'Hiragino Sans', system-ui, sans-serif; color: #fff; text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 3px 3px 0 #000, 0 4px 8px rgba(0,0,0,0.35); }
+.sb-vs { font-weight: 900; }
+.sb-sub { display: flex; align-items: center; gap: 14px; font-size: 12px; color: #eafcff; margin-top: 6px; }
+.s-box { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.s-num { font-size: 15px; font-weight: 700; color: #fff; min-width: 18px; text-align: center; }
+#msg { font-size: 12px; color: #eafcff; }
+canvas { border: 8px solid #000; border-radius: 0; display: block; background: #1FA5CB; }
+#ctrl { display: flex; gap: 8px; margin-top: 14px; }
+#ctrl button { font-size: 13px; padding: 6px 18px; border-radius: 8px; border: 1px solid #444; background: #2a2a2a; color: #eee; cursor: pointer; }
+#ctrl button:hover { background: #333; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- キャラ選択 -->
+  <div id="char-select">
+    <h2>キャラクター選択</h2>
+    <div class="cs-row">
+      <div class="cs-panel">
+        <div class="cs-cards" id="cs-p1"></div>
+      </div>
+      <div class="cs-vs">VS</div>
+      <div class="cs-panel">
+        <div class="cs-cards" id="cs-p2"></div>
+      </div>
+    </div>
+    <button id="cs-start">▶ 対戦スタート</button>
+  </div>
+
+  <!-- バトル -->
+  <div id="battle">
+    <div id="scoreboard">
+      <div class="sb-title">
+        <span id="name1">Player 1</span>
+        <span class="sb-vs"> vs </span>
+        <span id="name2">Player 2</span>
+      </div>
+      <div class="sb-sub">
+        <span class="s-num" id="sc1">0</span>
+        <span id="msg">— vs —</span>
+        <span class="s-num" id="sc2">0</span>
+      </div>
+    </div>
+    <canvas id="arena" width="500" height="500"></canvas>
+    <div id="ctrl">
+      <button id="btn-toggle">⏸ 一時停止</button>
+      <button id="btn-reset">↺ リセット</button>
+    </div>
+  </div>
+
+</div>
+<script>
+// ============================================================
+// ユーティリティ
+// ============================================================
+function rnd(a, b) { return a + Math.random() * (b - a); }
+function randVel(spd) {
+  const a = Math.random() * Math.PI * 2;
+  return { vx: Math.cos(a) * spd, vy: Math.sin(a) * spd };
+}
+
+// ============================================================
+// キャンバス
+// ============================================================
+const canvas = document.getElementById('arena');
+const ctx = canvas.getContext('2d');
+// ゲームロジック上の論理サイズ（この値を変えるとキャラ・フィールドの比率が変わってしまうため固定）
+const W = 500, H = 500;
+// 画面全体を拡大する倍率。実際のキャンバス解像度だけを引き伸ばし、
+// 描画時にctx側で拡大することでキャラ・フィールドの比率はそのまま保つ
+const GAME_SCALE = 1.3;
+canvas.width = W * GAME_SCALE;
+canvas.height = H * GAME_SCALE;
+
+// ============================================================
+// サウンドエンジン（Web Audio API）
+// ============================================================
+let audioCtx = null;
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+// 効果音全体のマスターボリューム（全体的に下げる場合はここを調整）
+const SFX_MASTER_VOLUME = 0.6;
+
+// 卓球ボール音（mp3）
+const BALL_HIT_SOUND_SRC = "the-sound-of-hitting-the-ball.mp3"
+function playBallHitSound(vol = 0.5) {
+  const a = new Audio(BALL_HIT_SOUND_SRC);
+  a.volume = vol * SFX_MASTER_VOLUME;
+  a.play().catch(() => {});
+}
+
+// ボクシングの鐘の音（決着時）
+const BOXING_BELL_SOUND_SRC = "試合終了のゴング.mp3";
+function playBoxingBell() {
+  const a = new Audio(BOXING_BELL_SOUND_SRC);
+  a.volume = 0.35;
+  a.play().catch(() => {});
+}
+
+// ノイズバッファ生成（ドラム系に使用）
+function makeNoiseBuffer(ac, duration = 0.05) {
+  const len = Math.ceil(ac.sampleRate * duration);
+  const buf = ac.createBuffer(1, len, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1);
+  return buf;
+}
+
+// 汎用：エンベロープ付きオシレーター
+function playTone({ freq = 440, endFreq, type = 'sine', attack = 0.005, decay = 0.12,
+                    gain = 0.3, startTime, filter, filterFreq, filterEnd, filterQ = 1 } = {}) {
+  gain *= SFX_MASTER_VOLUME;
+  const ac = getAudioCtx();
+  const t = startTime ?? ac.currentTime;
+  const osc = ac.createOscillator();
+  const env = ac.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t);
+  if (endFreq !== undefined) osc.frequency.exponentialRampToValueAtTime(Math.max(endFreq, 1), t + attack + decay);
+  env.gain.setValueAtTime(0, t);
+  env.gain.linearRampToValueAtTime(gain, t + attack);
+  env.gain.exponentialRampToValueAtTime(0.0001, t + attack + decay);
+  let node = osc;
+  if (filter) {
+    const bq = ac.createBiquadFilter();
+    bq.type = filter;
+    bq.frequency.setValueAtTime(filterFreq ?? 2000, t);
+    if (filterEnd !== undefined) bq.frequency.exponentialRampToValueAtTime(Math.max(filterEnd, 10), t + attack + decay);
+    bq.Q.value = filterQ;
+    osc.connect(bq);
+    node = bq;
+  }
+  node.connect(env);
+  env.connect(ac.destination);
+  osc.start(t); osc.stop(t + attack + decay + 0.02);
+}
+
+// ノイズ打撃音
+function playNoise({ attack = 0.002, decay = 0.08, gain = 0.25, filterFreq = 3000, filterEnd = 400, startTime } = {}) {
+  gain *= SFX_MASTER_VOLUME;
+  const ac = getAudioCtx();
+  const t = startTime ?? ac.currentTime;
+  const src = ac.createBufferSource();
+  src.buffer = makeNoiseBuffer(ac, attack + decay + 0.02);
+  const env = ac.createGain();
+  const bq = ac.createBiquadFilter();
+  bq.type = 'bandpass';
+  bq.frequency.setValueAtTime(filterFreq, t);
+  bq.frequency.exponentialRampToValueAtTime(Math.max(filterEnd, 20), t + attack + decay);
+  bq.Q.value = 0.7;
+  env.gain.setValueAtTime(0, t);
+  env.gain.linearRampToValueAtTime(gain, t + attack);
+  env.gain.exponentialRampToValueAtTime(0.0001, t + attack + decay);
+  src.connect(bq); bq.connect(env); env.connect(ac.destination);
+  src.start(t); src.stop(t + attack + decay + 0.02);
+}
+
+// 人間の声帯を模したフォルマント合成（母音・息・うめき）
+// pitch: 声の基本周波数, f1/f2: 第1・第2フォルマント周波数
+function playVoice({ pitch = 130, pitchEnd, f1 = 800, f2 = 1200, f1End, f2End,
+                     attack = 0.01, decay = 0.12, gain = 0.18, startTime,
+                     breathGain = 0.06 } = {}) {
+  gain *= SFX_MASTER_VOLUME; breathGain *= SFX_MASTER_VOLUME;
+  const ac = getAudioCtx();
+  const t = startTime ?? ac.currentTime;
+  const dur = attack + decay;
+
+  // 声帯振動（鋸波）
+  const osc = ac.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(pitch, t);
+  if (pitchEnd) osc.frequency.exponentialRampToValueAtTime(Math.max(pitchEnd, 20), t + dur);
+
+  // F1フォルマント（胸部共鳴）
+  const f1filt = ac.createBiquadFilter();
+  f1filt.type = 'bandpass'; f1filt.Q.value = 5;
+  f1filt.frequency.setValueAtTime(f1, t);
+  if (f1End) f1filt.frequency.exponentialRampToValueAtTime(f1End, t + dur);
+
+  // F2フォルマント（口腔共鳴）
+  const f2filt = ac.createBiquadFilter();
+  f2filt.type = 'bandpass'; f2filt.Q.value = 4;
+  f2filt.frequency.setValueAtTime(f2, t);
+  if (f2End) f2filt.frequency.exponentialRampToValueAtTime(f2End, t + dur);
+
+  // 息成分（ノイズ）
+  const noiseSrc = ac.createBufferSource();
+  noiseSrc.buffer = makeNoiseBuffer(ac, dur + 0.02);
+  const noiseF = ac.createBiquadFilter();
+  noiseF.type = 'bandpass'; noiseF.frequency.value = f2 * 1.2; noiseF.Q.value = 0.8;
+  const noiseEnv = ac.createGain();
+  noiseEnv.gain.setValueAtTime(breathGain, t);
+  noiseEnv.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  noiseSrc.connect(noiseF); noiseF.connect(noiseEnv);
+
+  // メインエンベロープ
+  const env = ac.createGain();
+  env.gain.setValueAtTime(0, t);
+  env.gain.linearRampToValueAtTime(gain, t + attack);
+  env.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+  // ミックス
+  const mixer = ac.createGain(); mixer.gain.value = 1;
+  osc.connect(f1filt); f1filt.connect(mixer);
+  osc.connect(f2filt); f2filt.connect(mixer);
+  noiseEnv.connect(mixer);
+  mixer.connect(env); env.connect(ac.destination);
+
+  osc.start(t); osc.stop(t + dur + 0.02);
+  noiseSrc.start(t); noiseSrc.stop(t + dur + 0.02);
+}
+
+// ポップ音（「ポ」「コ」）：口腔の急激な開放を模擬
+function playPop({ pitch = 200, decay = 0.07, gain = 0.22, startTime } = {}) {
+  gain *= SFX_MASTER_VOLUME;
+  const ac = getAudioCtx();
+  const t = startTime ?? ac.currentTime;
+
+  // 低域バースト（口腔開放の空気圧）
+  const osc = ac.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(pitch * 1.4, t);
+  osc.frequency.exponentialRampToValueAtTime(pitch * 0.3, t + decay);
+  const env = ac.createGain();
+  env.gain.setValueAtTime(gain, t);
+  env.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+  osc.connect(env); env.connect(ac.destination);
+
+  // クリック成分（唇離れの瞬間）
+  const click = ac.createOscillator();
+  click.type = 'square';
+  click.frequency.setValueAtTime(pitch * 3, t);
+  click.frequency.exponentialRampToValueAtTime(pitch * 0.5, t + 0.015);
+  const cEnv = ac.createGain();
+  cEnv.gain.setValueAtTime(gain * 0.4, t);
+  cEnv.gain.exponentialRampToValueAtTime(0.0001, t + 0.015);
+  click.connect(cEnv); cEnv.connect(ac.destination);
+
+  osc.start(t); osc.stop(t + decay + 0.01);
+  click.start(t); click.stop(t + 0.02);
+}
+
+// ============================================================
+// 各アクション別効果音
+// ============================================================
+
+// 🥊 通常パンチ：打撃音 ＋ 「うっ」という短い息（被弾者）
+const PUNCH_SOUND_SRC = "中パンチ.mp3";
+function sfxPunch() {
+  const a = new Audio(PUNCH_SOUND_SRC);
+  a.volume = 0.6 * SFX_MASTER_VOLUME;
+  a.play().catch(() => {});
+  // 「うっ」：被弾の苦しい息
+  playVoice({ pitch: 180, pitchEnd: 140, f1: 500, f2: 900, f1End: 350, f2End: 600,
+              attack: 0.008, decay: 0.1, gain: 0.14, breathGain: 0.08 });
+}
+
+// 🥊 アッパーカット：「オラッ！」的な気合い＋「ぐあっ」打ち上げられる声
+function sfxUppercut() {
+  playNoise({ filterFreq: 4000, filterEnd: 300, decay: 0.12, gain: 0.32 });
+  playTone({ freq: 90, endFreq: 30, type: 'sawtooth', decay: 0.18, gain: 0.22 });
+  // 「オラ」：攻撃者の気合い（高め→低め）
+  playVoice({ pitch: 220, pitchEnd: 160, f1: 700, f2: 1100, f1End: 500, f2End: 800,
+              attack: 0.005, decay: 0.13, gain: 0.18, breathGain: 0.07 });
+  // 「ぐあっ」：被弾者の打ち上げ声（少し遅れて）
+  const ac = getAudioCtx();
+  playVoice({ pitch: 160, pitchEnd: 220, f1: 600, f2: 1000, f1End: 900, f2End: 1400,
+              attack: 0.01, decay: 0.18, gain: 0.15, breathGain: 0.1,
+              startTime: ac.currentTime + 0.06 });
+}
+
+// 🎯 ダーツ発射：「ふっ」という息で投げる
+function sfxDartShoot() {
+  // 「ふっ」：息を吐いて投げる
+  playVoice({ pitch: 160, pitchEnd: 120, f1: 300, f2: 2200, f1End: 200, f2End: 1800,
+              attack: 0.005, decay: 0.07, gain: 0.1, breathGain: 0.18 });
+  playNoise({ filterFreq: 7000, filterEnd: 3000, decay: 0.05, gain: 0.1 });
+  // ダーツの飛翔音（細い高音）
+  playTone({ freq: 2200, endFreq: 900, type: 'sawtooth', attack: 0.002, decay: 0.05, gain: 0.07,
+             filter: 'highpass', filterFreq: 1500 });
+}
+
+// 🎯 ダーツ命中：「いっ」という短い痛がり声
+function sfxDartHit() {
+  playNoise({ filterFreq: 5000, filterEnd: 1200, decay: 0.04, gain: 0.18 });
+  // 「いっ」
+  playVoice({ pitch: 260, pitchEnd: 200, f1: 300, f2: 2300, f1End: 250, f2End: 1900,
+              attack: 0.005, decay: 0.09, gain: 0.16, breathGain: 0.06 });
+}
+
+// 🎾 ラケットスイング・打ち返し：「はっ」という気合い
+function sfxRacketSwing() {
+  playNoise({ filterFreq: 5000, filterEnd: 1800, decay: 0.07, gain: 0.13 });
+  // 「はっ」：鋭い呼気
+  playVoice({ pitch: 200, pitchEnd: 150, f1: 700, f2: 1400, f1End: 500, f2End: 1100,
+              attack: 0.004, decay: 0.09, gain: 0.14, breathGain: 0.14 });
+}
+
+// 🎾 テニス直接スマッシュ：「ヤッ！」という強い気合い＋「うわっ」
+function sfxTennisSmash() {
+  playNoise({ filterFreq: 3500, filterEnd: 500, decay: 0.1, gain: 0.28 });
+  playTone({ freq: 140, endFreq: 50, type: 'triangle', decay: 0.14, gain: 0.18 });
+  // 「ヤッ」
+  playVoice({ pitch: 230, pitchEnd: 170, f1: 700, f2: 1200, f1End: 500, f2End: 900,
+              attack: 0.004, decay: 0.12, gain: 0.2, breathGain: 0.09 });
+  // 「うわっ」（被弾、少し遅れて）
+  const ac = getAudioCtx();
+  playVoice({ pitch: 190, pitchEnd: 140, f1: 500, f2: 900, f1End: 400, f2End: 700,
+              attack: 0.01, decay: 0.14, gain: 0.13, breathGain: 0.08,
+              startTime: ac.currentTime + 0.05 });
+}
+
+// 🏓 ピンポン発射：「カッ」
+function sfxPingFire() {
+  playBallHitSound(0.4);
+}
+
+// 🏓 ピンポン壁反射：「カンッ」（高め・短い）
+function sfxPingWall() {
+  playBallHitSound(0.35);
+}
+
+// 🏓 ピンポン命中：「コンッ」（やや低め）
+function sfxPingHit() {
+  playBallHitSound(0.5);
+}
+
+// 🏓 ピンポンガイの打ち返し：「コンッ」（ラケット風・少し硬め）
+function sfxPingReturn() {
+  playBallHitSound(0.45);
+}
+
+// ⏳ 空気砲発射：「フォッ」という吐息
+function sfxAirShoot() {
+  // 「フォ」：口をすぼめた強い息
+  playVoice({ pitch: 140, pitchEnd: 110, f1: 350, f2: 900, f1End: 250, f2End: 700,
+              attack: 0.01, decay: 0.14, gain: 0.15, breathGain: 0.2 });
+  playNoise({ filterFreq: 1200, filterEnd: 300, decay: 0.12, gain: 0.09 });
+  playTone({ freq: 260, endFreq: 80, type: 'sine', attack: 0.008, decay: 0.13, gain: 0.13 });
+}
+
+// ⏳ 空気砲命中：「どっ」という衝撃＋「ぐっ」
+function sfxAirHit() {
+  playTone({ freq: 170, endFreq: 50, type: 'sine', attack: 0.005, decay: 0.17, gain: 0.2 });
+  playNoise({ filterFreq: 1800, filterEnd: 300, decay: 0.09, gain: 0.14 });
+  // 「ぐっ」
+  playVoice({ pitch: 150, pitchEnd: 120, f1: 500, f2: 800, f1End: 380, f2End: 600,
+              attack: 0.008, decay: 0.12, gain: 0.15, breathGain: 0.06 });
+}
+
+// ⏳ タイムトラベル（ポポポッ！）：口腔の「ポ」を3連続
+function sfxTimeTravel() {
+  const ac = getAudioCtx();
+  const t = ac.currentTime;
+  // ポポポッ（だんだん高くなる）
+  const pops = [
+    { pitch: 160, delay: 0.00 },
+    { pitch: 200, delay: 0.10 },
+    { pitch: 260, delay: 0.20 },
+  ];
+  pops.forEach(({ pitch, delay }) => {
+    playPop({ pitch, decay: 0.09, gain: 0.28, startTime: t + delay });
+    // 各ポップに短い音色変化を添える
+    playTone({ freq: pitch * 2, endFreq: pitch * 0.8, type: 'sine',
+               attack: 0.003, decay: 0.07, gain: 0.1, startTime: t + delay });
+  });
+  // 消える時のシュワーン（高周波がフェードアウト）
+  playNoise({ filterFreq: 6000, filterEnd: 80, decay: 0.45, gain: 0.13, startTime: t + 0.18 });
+}
+
+// ⏳ 未来TTG出現（ポポポポポッ！）：5連続ポップで出現感
+function sfxTTGSpawn() {
+  const ac = getAudioCtx();
+  const t = ac.currentTime;
+  const pops = [
+    { pitch: 300, delay: 0.00 },
+    { pitch: 240, delay: 0.08 },
+    { pitch: 190, delay: 0.16 },
+    { pitch: 150, delay: 0.24 },
+    { pitch: 120, delay: 0.32 },
+  ];
+  pops.forEach(({ pitch, delay }) => {
+    playPop({ pitch, decay: 0.10, gain: 0.26, startTime: t + delay });
+    playTone({ freq: pitch * 2.2, endFreq: pitch * 0.7, type: 'triangle',
+               attack: 0.004, decay: 0.08, gain: 0.09, startTime: t + delay });
+  });
+  // ワープイン時の輝き音
+  playNoise({ filterFreq: 9000, filterEnd: 800, decay: 0.5, gain: 0.16, startTime: t });
+}
+
+// キャラ同士衝突：「どん」という体当たり＋「おっ」
+function sfxBump() {
+  playNoise({ filterFreq: 1600, filterEnd: 450, decay: 0.07, gain: 0.15 });
+  playTone({ freq: 100, endFreq: 55, type: 'sine', decay: 0.09, gain: 0.1 });
+  // 「おっ」：ぶつかった時の声
+  playVoice({ pitch: 170, pitchEnd: 140, f1: 550, f2: 950, f1End: 420, f2End: 750,
+              attack: 0.007, decay: 0.09, gain: 0.12, breathGain: 0.07 });
+}
+
+// 勝利ファンファーレ（ボクシングの鐘）
+function sfxWin() {
+  playBoxingBell();
+  const ac = getAudioCtx();
+  const t = ac.currentTime;
+  // 「やったー」的な歓声（ワーっという声）
+  playVoice({ pitch: 280, pitchEnd: 320, f1: 700, f2: 1500, f1End: 800, f2End: 1800,
+              attack: 0.08, decay: 0.5, gain: 0.18, breathGain: 0.06, startTime: t + 0.4 });
+}
+
+// 💣 爆弾受け渡し：「ポン」と軽く手渡す音
+function sfxBombPass() {
+  playPop({ pitch: 650, decay: 0.05, gain: 0.22 });
+}
+
+// 💣 爆弾の点滅警告音：「ピッ」という短いビープ
+function sfxBombTick() {
+  playTone({ freq: 1300, type: 'square', attack: 0.001, decay: 0.05, gain: 0.22 });
+}
+
+// 💣 爆発：低音の衝撃＋ノイズ
+function sfxBombExplode() {
+  playNoise({ attack: 0.004, decay: 0.45, gain: 0.5, filterFreq: 1400, filterEnd: 70 });
+  playTone({ freq: 90, endFreq: 28, type: 'sawtooth', attack: 0.01, decay: 0.5, gain: 0.4 });
+  playTone({ freq: 55, endFreq: 20, type: 'sine', attack: 0.01, decay: 0.6, gain: 0.3 });
+}
+
+// 🧨 地雷設置：「カチッ」という設置音
+function sfxMinePlant() {
+  playNoise({ attack: 0.002, decay: 0.06, gain: 0.2, filterFreq: 2200, filterEnd: 800 });
+  playTone({ freq: 500, endFreq: 260, type: 'square', attack: 0.002, decay: 0.06, gain: 0.15 });
+}
+
+// 🧨 地雷爆発：低音の衝撃＋鋭いノイズ（爆弾より短く鋭い炸裂音）
+function sfxMineExplode() {
+  playNoise({ attack: 0.003, decay: 0.35, gain: 0.45, filterFreq: 2500, filterEnd: 90 });
+  playTone({ freq: 110, endFreq: 30, type: 'sawtooth', attack: 0.005, decay: 0.4, gain: 0.35 });
+  playTone({ freq: 60, endFreq: 22, type: 'sine', attack: 0.005, decay: 0.5, gain: 0.28 });
+}
+
+// 🔫 発砲音：鋭いクラック音
+function sfxGunShot() {
+  playNoise({ attack: 0.001, decay: 0.05, gain: 0.3, filterFreq: 3500, filterEnd: 900 });
+  playTone({ freq: 900, endFreq: 200, type: 'square', attack: 0.001, decay: 0.04, gain: 0.15 });
+}
+
+// 🔫 着弾音：金属的な短い衝撃音
+function sfxGunHit() {
+  playNoise({ attack: 0.001, decay: 0.06, gain: 0.28, filterFreq: 2600, filterEnd: 500 });
+  playTone({ freq: 350, endFreq: 120, type: 'triangle', attack: 0.001, decay: 0.05, gain: 0.18 });
+}
+
+// ============================================================
+// ゲーム状態
+// ============================================================
+let running = false, over = false, animId = null;
+let sc1 = 0, sc2 = 0;
+let p1char, p2char, target;
+let resultWinner = null; // リザルト画面で動き続ける勝者
+let darts = [], pingBalls = [], particles = [], dmgTexts = [], airBullets = [], timeTravelEffects = [];
+// ダーツの的が0になった時の放射ダーツ攻撃（3連）の状態管理
+let targetBurstPending = 0, targetBurstTimer = 0, targetBurstOrigin = null, targetBurstOwner = null;
+const TARGET_BURST_TOTAL = 3;     // 放射攻撃の連射回数
+const TARGET_BURST_INTERVAL = 14; // 連射の間隔（フレーム）
+let ttgFuture = null; // タイムトラベラーガイ（未来）
+let ttgFuture2 = null; // タイムトラベラーガイ（未来）P2側（TTG vs TTG 用）
+let sausages = []; // ツインズガイのソーセージ弾
+let p1twinB = null, p2twinB = null; // ツインズ側の双子B（p1char/p2charはA）
+let bomb = null; // 爆弾ガイの爆弾の状態（持ち主・タイマー・点滅など）
+const BOMB_TIME_LIMIT = 20 * 60;   // 制限時間20秒（60fps想定）
+const BOMB_BLINK_TIME = 3 * 60;    // 残り3秒から点滅警告
+const BOMB_PASS_COOLDOWN = 20;     // 受け渡し直後の連続受け渡し防止フレーム数
+let landmines = []; // 地雷ガイが設置した地雷の配列
+const LANDMINE_STOP_TIME = 150;    // 壁に激突してから動けるようになるまでのフレーム数（約2.5秒）
+const LANDMINE_MAX_PER_OWNER = 4;  // 1人が同時に設置できる地雷の上限（超えたら古いものから消える）
+let bullets = []; // ガンマンガイの銃弾の配列
+
+// ============================================================
+// キャラクター定義
+// ============================================================
+const ROSTER = [
+  {
+    id: 'boxing',
+    name: 'Boxing Guy', emoji: '🥊',
+    desc: 'パンチ＆アッパーカットで殴り続ける格闘家',
+    color: '#378ADD', lightColor: '#B5D4F4',
+    makeChar(side) {
+      const s = rnd(2.2, 3.2); const v = randVel(s);
+      return {
+        x: side === 'p1' ? rnd(60, 180) : rnd(W-180, W-60),
+        y: rnd(80, H-80),
+        vx: v.vx, vy: v.vy, baseSpd: s,
+        r: 55, hp: 1000, maxHp: 1000,
+        punchCooldown: 0, upperCooldown: 0, upperCharge: 0, hitTimer: 0, hitstop: 0, knockback: 0, punchAnimTimer: 0, upperAnimTimer: 0, dodgeAnimTimer: 0, dodgeCooldown: 0, comboCount: 0, comboTimer: 0,
+        trail: [],
+        name: 'Boxing Guy', emoji: '🥊',
+        color: '#378ADD', lightColor: '#B5D4F4',
+        type: 'boxing'
+      };
+    }
+  },
+  {
+    id: 'darts',
+    name: 'Darts Guy', emoji: '🎯',
+    desc: '的を狙ってダーツを連射！的が破壊されると爆発',
+    color: '#D85A30', lightColor: '#F5C4B3',
+    makeChar(side) {
+      const s = rnd(2.2, 3.2); const v = randVel(s);
+      return {
+        x: side === 'p1' ? rnd(60, 180) : rnd(W-180, W-60),
+        y: rnd(80, H-80),
+        vx: v.vx, vy: v.vy, baseSpd: s,
+        r: 55, hp: 1000, maxHp: 1000,
+        dartCooldown: 0, hitTimer: 0, hitstop: 0, burstCount: 0, burstInterval: 0, knockback: 0,
+        trail: [],
+        name: 'Darts Guy', emoji: '🎯',
+        color: '#D85A30', lightColor: '#F5C4B3',
+        type: 'darts'
+      };
+    }
+  },
+  {
+    id: 'tennis',
+    name: 'Tennis Guy', emoji: '🎾',
+    desc: 'テニスボールを高速スマッシュ！打ち返すことも可能',
+    color: '#4CAF50', lightColor: '#A5D6A7',
+    makeChar(side) {
+      const s = rnd(2.2, 3.2); const v = randVel(s);
+      return {
+        x: side === 'p1' ? rnd(60, 180) : rnd(W-180, W-60),
+        y: rnd(80, H-80),
+        vx: v.vx, vy: v.vy, baseSpd: s,
+        r: 55, hp: 1000, maxHp: 1000,
+        smashCooldown: 180, hitTimer: 0, hitstop: 0, knockback: 0, racketAngle: 0, swingTimer: 0, swingBaseAngle: 0,
+        trail: [],
+        name: 'Tennis Guy', emoji: '🎾',
+        color: '#4CAF50', lightColor: '#A5D6A7',
+        type: 'tennis'
+      };
+    }
+  },
+  {
+    id: 'pingpong',
+    name: 'Ping Pong Guy', emoji: '🏓',
+    desc: '貫通するピンポン玉を連打！壁を跳ねて翻弄する',
+    color: '#9C27B0', lightColor: '#CE93D8',
+    makeChar(side) {
+      const s = rnd(2.2, 3.2); const v = randVel(s);
+      return {
+        x: side === 'p1' ? rnd(60, 180) : rnd(W-180, W-60),
+        y: rnd(80, H-80),
+        vx: v.vx, vy: v.vy, baseSpd: s,
+        r: 55, hp: 1000, maxHp: 1000,
+        hitTimer: 0, hitstop: 0,
+        ballFired: false, ballCooldown: 0, knockback: 0,
+        trail: [],
+        name: 'Ping Pong Guy', emoji: '🏓',
+        color: '#9C27B0', lightColor: '#CE93D8',
+        type: 'pingpong'
+      };
+    }
+  },
+  {
+    id: 'bomb',
+    name: 'Bomb Guy', emoji: '💣',
+    desc: '20秒の時限爆弾を持ち運ぶ！触れた相手に押し付けて爆発に巻き込め',
+    color: '#424242', lightColor: '#FF8A65',
+    makeChar(side) {
+      const s = rnd(2.2, 3.2); const v = randVel(s);
+      return {
+        x: side === 'p1' ? rnd(60, 180) : rnd(W-180, W-60),
+        y: rnd(80, H-80),
+        vx: v.vx, vy: v.vy, baseSpd: s,
+        r: 55, hp: 1000, maxHp: 1000,
+        hitTimer: 0, hitstop: 0, knockback: 0,
+        trail: [],
+        name: 'Bomb Guy', emoji: '💣',
+        color: '#424242', lightColor: '#FF8A65',
+        type: 'bomb'
+      };
+    }
+  },
+  {
+    id: 'twins',
+    name: 'Twins Guy', emoji: '👬',
+    desc: '双子でHP共有！ソーセージで攻撃＆回復',
+    color: '#E91E63', lightColor: '#F48FB1',
+    makeChar(side) {
+      const s = rnd(2.0, 3.0);
+      const va = randVel(s), vb = randVel(s);
+      // 双子A・Bを作り、互いを参照させる
+      const a = {
+        x: side === 'p1' ? rnd(60, 140) : rnd(W-140, W-60),
+        y: rnd(80, H/2 - 20),
+        vx: va.vx, vy: va.vy, baseSpd: s,
+        r: 48, hp: 1000, maxHp: 1000,
+        hitTimer: 0, hitstop: 0, knockback: 0,
+        trail: [],
+        name: 'Twins Guy A', emoji: '👬',
+        color: '#E91E63', lightColor: '#F48FB1',
+        type: 'twins', twinId: 'A',
+        sausageCooldown: 90, throwTimer: 0, twin: null
+      };
+      const b = {
+        x: side === 'p1' ? rnd(60, 140) : rnd(W-140, W-60),
+        y: rnd(H/2 + 20, H - 80),
+        vx: vb.vx, vy: vb.vy, baseSpd: s,
+        r: 48, hp: 1000, maxHp: 1000,
+        hitTimer: 0, hitstop: 0, knockback: 0,
+        trail: [],
+        name: 'Twins Guy B', emoji: '👬',
+        color: '#E91E63', lightColor: '#F48FB1',
+        type: 'twins', twinId: 'B',
+        sausageCooldown: 45, throwTimer: 0, twin: null
+      };
+      a.twin = b; b.twin = a;
+      // makeChar は1体しか返せないので a を返し、b は a.twinB として保持
+      a.twinB = b;
+      return a;
+    }
+  },
+  {
+    id: 'timetraveler',
+    name: 'Time Traveler Guy', emoji: '⏳',
+    desc: 'HP低下で過去に逃げ、未来の自分を呼び寄せて戦う',
+    color: '#00BCD4', lightColor: '#80DEEA',
+    makeChar(side) {
+      const s = rnd(2.2, 3.2); const v = randVel(s);
+      return {
+        x: side === 'p1' ? rnd(60, 180) : rnd(W-180, W-60),
+        y: rnd(80, H-80),
+        vx: v.vx, vy: v.vy, baseSpd: s,
+        r: 55, hp: 1000, maxHp: 1000,
+        hitTimer: 0, hitstop: 0, knockback: 0,
+        trail: [],
+        name: 'Time Traveler Guy', emoji: '⏳',
+        color: '#00BCD4', lightColor: '#80DEEA',
+        type: 'timetraveler',
+        timeLoopX: null  // 収束後のHP閾値
+      };
+    }
+  },
+  {
+    id: 'landmine',
+    name: 'Landmine Guy', emoji: '🧨',
+    desc: '壁に激突すると数秒間動けなくなり、その場に地雷を設置する',
+    color: '#6D4C28', lightColor: '#C8A165',
+    makeChar(side) {
+      const s = rnd(2.2, 3.2); const v = randVel(s);
+      return {
+        x: side === 'p1' ? rnd(60, 180) : rnd(W-180, W-60),
+        y: rnd(80, H-80),
+        vx: v.vx, vy: v.vy, baseSpd: s,
+        r: 55, hp: 1000, maxHp: 1000,
+        hitTimer: 0, hitstop: 0, knockback: 0,
+        trail: [],
+        name: 'Landmine Guy', emoji: '🧨',
+        color: '#6D4C28', lightColor: '#C8A165',
+        type: 'landmine',
+        wallStopTimer: 0 // 壁に激突した後、動けなくなる残りフレーム数
+      };
+    }
+  },
+  {
+    id: 'gunman',
+    name: 'Gunman Guy', emoji: '🔫',
+    desc: '敵が真横に並んだ瞬間だけ、狙いすまして銃を撃つ',
+    color: '#5D4037', lightColor: '#D7B98E',
+    makeChar(side) {
+      const s = rnd(2.2, 3.2); const v = randVel(s);
+      return {
+        x: side === 'p1' ? rnd(60, 180) : rnd(W-180, W-60),
+        y: rnd(80, H-80),
+        vx: v.vx, vy: v.vy, baseSpd: s,
+        r: 55, hp: 1000, maxHp: 1000,
+        hitTimer: 0, hitstop: 0, knockback: 0,
+        trail: [],
+        name: 'Gunman Guy', emoji: '🔫',
+        color: '#5D4037', lightColor: '#D7B98E',
+        type: 'gunman',
+        gunCooldown: 0, gunFireTimer: 0, aimDir: 1, burstCount: 0, overheatCooldown: 0
+      };
+    }
+  }
+];
+
+// ============================================================
+// キャラ選択UI
+// ============================================================
+let selectedP1 = null, selectedP2 = null;
+
+function buildCharSelect() {
+  ['p1', 'p2'].forEach(player => {
+    const container = document.getElementById('cs-' + player);
+    container.innerHTML = '';
+    ROSTER.forEach(def => {
+      const card = document.createElement('div');
+      card.className = 'cs-card';
+      // 前回の選択を復元
+      if ((player === 'p1' && selectedP1 === def.id) || (player === 'p2' && selectedP2 === def.id)) {
+        card.classList.add('selected');
+      }
+      card.innerHTML = `<span class="cs-emoji">${def.emoji}</span><div class="cs-name">${def.name}</div>`;
+      card.addEventListener('click', () => {
+        container.querySelectorAll('.cs-card').forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
+        if (player === 'p1') selectedP1 = def.id;
+        else selectedP2 = def.id;
+        document.getElementById('cs-start').classList.toggle('ready', !!(selectedP1 && selectedP2));
+      });
+      container.appendChild(card);
+    });
+  });
+}
+
+document.getElementById('cs-start').addEventListener('click', () => {
+  if (!selectedP1 || !selectedP2) return;
+  getAudioCtx(); // ユーザー操作でAudioContext初期化
+  document.getElementById('char-select').style.display = 'none';
+  document.getElementById('battle').style.display = 'flex';
+  startBattle(selectedP1, selectedP2);
+});
+
+// ============================================================
+// バトル開始
+// ============================================================
+function startBattle(id1, id2) {
+  const def1 = ROSTER.find(r => r.id === id1);
+  const def2 = ROSTER.find(r => r.id === id2);
+
+  // タイムトラベラーが含まれる場合、時間ループシミュレーションを実行
+  const hasTTG = (id1 === 'timetraveler' || id2 === 'timetraveler');
+  let loopX = null;
+  if (hasTTG) {
+    loopX = runTimeLoopSimulation(id1, id2);
+  }
+
+  p1char = def1.makeChar('p1');
+  p2char = def2.makeChar('p2');
+
+  // タイムループ収束値を設定（TTG vs TTG の場合は両方にそれぞれシミュレーション）
+  if (hasTTG) {
+    if (id1 === 'timetraveler' && id2 === 'timetraveler') {
+      // 両方TTG：それぞれ相手キャラとしてシミュレーション
+      p1char.timeLoopX = runTimeLoopSimulation('timetraveler', 'timetraveler');
+      p2char.timeLoopX = runTimeLoopSimulation('timetraveler', 'timetraveler');
+    } else {
+      const ttgChar = (p1char.type === 'timetraveler') ? p1char : p2char;
+      ttgChar.timeLoopX = loopX;
+    }
+  }
+
+  const hasDarts = (id1 === 'darts' || id2 === 'darts');
+  if (hasDarts) {
+    const tv = randVel(rnd(2.5, 3.5));
+    target = { x: rnd(W/2-60, W/2+60), y: rnd(80, H-80), vx: tv.vx, vy: tv.vy, r: 25, trail: [], hp: 301, maxHp: 301 };
+  } else {
+    target = null;
+  }
+  darts = []; pingBalls = []; particles = []; dmgTexts = []; airBullets = []; timeTravelEffects = []; sausages = [];
+  landmines = []; bullets = [];
+  targetBurstPending = 0; targetBurstTimer = 0; targetBurstOrigin = null; targetBurstOwner = null;
+  ttgFuture = null;
+  ttgFuture2 = null;
+  // ツインズの双子Bを初期化
+  p1twinB = (p1char.type === 'twins') ? p1char.twinB : null;
+  p2twinB = (p2char.type === 'twins') ? p2char.twinB : null;
+  // 爆弾ガイの爆弾を初期化（最初は爆弾ガイ自身が保持。まだタイマーは始動しない）
+  if (p1char.type === 'bomb' || p2char.type === 'bomb') {
+    bomb = {
+      holder: (p1char.type === 'bomb') ? p1char : p2char,
+      timer: BOMB_TIME_LIMIT,
+      started: false,
+      blinking: false,
+      exploded: false,
+      passCooldown: 0
+    };
+  } else {
+    bomb = null;
+  }
+  over = false; running = true;
+  document.getElementById('name1').textContent = def1.emoji + ' ' + def1.name;
+  document.getElementById('name2').textContent = def2.emoji + ' ' + def2.name;
+  document.getElementById('msg').textContent = '戦闘中...';
+  document.getElementById('btn-toggle').textContent = '⏸ 一時停止';
+  animId = requestAnimationFrame(loop);
+}
+
+// ============================================================
+// リセット → 選択画面へ
+// ============================================================
+function doReset() {
+  running = false; over = false;
+  resultWinner = null;
+  cancelAnimationFrame(animId);
+  darts = []; pingBalls = []; particles = []; dmgTexts = []; airBullets = []; timeTravelEffects = []; sausages = [];
+  landmines = []; bullets = [];
+  targetBurstPending = 0; targetBurstTimer = 0; targetBurstOrigin = null; targetBurstOwner = null;
+  ttgFuture = null;
+  ttgFuture2 = null;
+  p1twinB = null; p2twinB = null;
+  bomb = null;
+  document.getElementById('battle').style.display = 'none';
+  document.getElementById('char-select').style.display = 'flex';
+  // 前回の選択を保持したままUIを再構築
+  buildCharSelect();
+  if (selectedP1 && selectedP2) {
+    document.getElementById('cs-start').classList.add('ready');
+  }
+}
+
+document.getElementById('btn-reset').addEventListener('click', doReset);
+document.getElementById('btn-toggle').addEventListener('click', () => {
+  if (over) { doReset(); return; }
+  running = !running;
+  if (running) {
+    document.getElementById('btn-toggle').textContent = '⏸ 一時停止';
+    document.getElementById('msg').textContent = '戦闘中...';
+    animId = requestAnimationFrame(loop);
+  } else {
+    document.getElementById('btn-toggle').textContent = '▶ 再開';
+    cancelAnimationFrame(animId);
+  }
+});
+document.addEventListener('keydown', e => {
+  if (e.key === ' ' && document.getElementById('battle').style.display !== 'none') {
+    e.preventDefault();
+    document.getElementById('btn-toggle').click();
+  }
+});
+
+// ============================================================
+// 物理・攻撃ロジック
+// ============================================================
+function moveChar(c) {
+  if (c.hitstop > 0) { c.hitstop--; return; }
+  // 地雷ガイ：壁に激突した直後は数秒間その場から動けない
+  if (c.type === 'landmine' && c.wallStopTimer > 0) {
+    c.wallStopTimer--;
+    if (c.hitTimer > 0) c.hitTimer--;
+    return;
+  }
+  c.trail.push({ x: c.x, y: c.y });
+  if (c.trail.length > 10) c.trail.shift();
+  c.x += c.vx; c.y += c.vy;
+  let hitWall = false;
+  let wallSide = null;
+  if (c.x - c.r < 0)  { c.x = c.r;     c.vx =  Math.abs(c.vx); hitWall = true; wallSide = 'left'; }
+  if (c.x + c.r > W)  { c.x = W - c.r; c.vx = -Math.abs(c.vx); hitWall = true; wallSide = 'right'; }
+  if (c.y - c.r < 0)  { c.y = c.r;     c.vy =  Math.abs(c.vy); hitWall = true; wallSide = 'top'; }
+  if (c.y + c.r > H)  { c.y = H - c.r; c.vy = -Math.abs(c.vy); hitWall = true; wallSide = 'bottom'; }
+  // 地雷ガイ：壁に触れたらその場で停止し、壁際に地雷を設置
+  if (c.type === 'landmine' && hitWall && c.hp > 0) {
+    c.wallStopTimer = LANDMINE_STOP_TIME;
+    plantLandmine(c, wallSide);
+  }
+  if (c.hitTimer > 0) c.hitTimer--;
+  if (c.dodgeCooldown > 0) c.dodgeCooldown--;
+  // ノックバック中は徐々に減速して元の速度に戻す、それ以外は一定に保つ
+  if (c.knockback > 0) {
+    c.knockback--;
+    const spd = Math.hypot(c.vx, c.vy);
+    const target = c.baseSpd + (spd - c.baseSpd) * 0.85;
+    if (spd > 0) { c.vx = (c.vx / spd) * target; c.vy = (c.vy / spd) * target; }
+  } else {
+    const spd = Math.hypot(c.vx, c.vy);
+    if (spd > 0) { c.vx = (c.vx / spd) * c.baseSpd; c.vy = (c.vy / spd) * c.baseSpd; }
+  }
+}
+
+function resolveCollision(a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const minD = a.r + b.r;
+  if (dist >= minD) return;
+  const nx = dx / dist, ny = dy / dist;
+  const overlap = (minD - dist) / 2;
+  a.x -= nx * overlap; a.y -= ny * overlap;
+  b.x += nx * overlap; b.y += ny * overlap;
+  const dvx = b.vx - a.vx, dvy = b.vy - a.vy;
+  const dot = dvx * nx + dvy * ny;
+  if (dot < 0) {
+    sfxBump();
+    a.vx += dot * nx; a.vy += dot * ny;
+    b.vx -= dot * nx; b.vy -= dot * ny;
+  }
+}
+
+function moveTarget() {
+  target.trail.push({ x: target.x, y: target.y });
+  if (target.trail.length > 8) target.trail.shift();
+  target.x += target.vx; target.y += target.vy;
+  if (target.x - target.r < 0)  { target.x = target.r;     target.vx =  Math.abs(target.vx); }
+  if (target.x + target.r > W)  { target.x = W - target.r; target.vx = -Math.abs(target.vx); }
+  if (target.y - target.r < 0)  { target.y = target.r;     target.vy =  Math.abs(target.vy); }
+  if (target.y + target.r > H)  { target.y = H - target.r; target.vy = -Math.abs(target.vy); }
+}
+
+function spawnParticles(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = rnd(1.5, 4);
+    particles.push({ x, y, vx: Math.cos(a)*s, vy: Math.sin(a)*s, life: 1, color, r: rnd(2, 4) });
+  }
+}
+function spawnDmg(x, y, dmg, color) {
+  dmgTexts.push({ x, y: y - 76, text: `-${dmg}`, life: 1, color });
+}
+
+// Boxing攻撃
+function updateBoxing(attacker, defender) {
+  if (attacker.hp <= 0 || defender.hp <= 0) return;
+  // 連続パンチの間隔が空きすぎたらコンボをリセット（チェーンが途切れた場合）
+  if (attacker.comboTimer > 0) attacker.comboTimer--;
+  else attacker.comboCount = 0;
+  if (attacker.upperCooldown > 0) attacker.upperCooldown--;
+  // 被弾者がヒットストップ中はCDだけ進めて攻撃はしない
+  if (defender.hitstop > 0) {
+    if (attacker.punchCooldown > 0) attacker.punchCooldown--;
+    return;
+  }
+  if (attacker.punchCooldown > 0) { attacker.punchCooldown--; return; }
+
+  const dx = defender.x - attacker.x;
+  const dy = defender.y - attacker.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist >= attacker.r + defender.r + 5) return;
+
+  // アッパーカット判定：攻撃者と守備者がほぼ縦に並んでいて、攻撃者が下にいるときのみ発動
+  // 縦成分が横成分より大きい（上下方向に近い）＝真上・真下60°以内
+  const absDx = Math.abs(dx);
+  const absDy = Math.abs(dy);
+  const isNearlyVertical = absDy > absDx * 1.5; // 真上/真下60°以内
+  const isUpperAngle = attacker.y > defender.y && attacker.upperCooldown === 0 && isNearlyVertical; // 攻撃者が下→アッパー
+  // 攻撃者が上にいて敵が下にいる場合は攻撃せず、ただ物理的に弾かれるだけにする
+  const isBelowAttacker = attacker.y < defender.y && isNearlyVertical;
+
+  if (isBelowAttacker) {
+    // 何もしない：ダメージ・アニメーションなし、ただ反発するだけ
+    const ndx = dx / (dist || 1), ndy = dy / (dist || 1);
+    defender.vx = ndx * 4;
+    defender.vy = ndy * 4;
+    attacker.vx = -ndx * 4;
+    attacker.vy = -ndy * 4;
+    attacker.punchCooldown = 6; // 連続反発を防ぐ最低限のクールダウン
+    return;
+  }
+
+  // 躱し判定（被弾側がCDなしなら一定確率で回避）
+  if (defender.dodgeCooldown === 0 && Math.random() < 0.18) {
+    defender.dodgeAnimTimer = 18;
+    defender.dodgeCooldown = 60;
+    attacker.punchCooldown = isUpperAngle ? 10 : 6;
+    attacker.comboCount = 0; // 躱されたら連続パンチは途切れる
+    // 攻撃者から離れる方向へ後退
+    const ndx = dx / (dist || 1), ndy = dy / (dist || 1);
+    defender.vx = -ndx * 6;
+    defender.vy = -ndy * 6;
+    defender.knockback = 16;
+    dmgTexts.push({ x: defender.x, y: defender.y - defender.r - 24, text: 'DODGE!', life: 1.0, color: '#7CF7FF' });
+    return;
+  }
+
+  if (isUpperAngle) {
+    const dmg = 120;
+    defender.hp = Math.max(0, defender.hp - dmg);
+    defender.hitTimer = 15;
+    attacker.upperCooldown = 0;
+    attacker.punchCooldown = 20;
+    attacker.punchAnimTimer = 20;
+    attacker.upperAnimTimer = 20;
+    attacker.comboCount = 0; // アッパーが入ったら連続パンチのコンボはリセット
+    defender.vx = dx / (dist || 1) * 2;
+    defender.vy = -30; // 攻撃者が下から打ち上げる
+    defender.knockback = 45;
+    // 被弾者のみ長めにストップ（攻撃者は動き続ける）
+    defender.hitstop = 0;
+    sfxUppercut();
+    spawnParticles(defender.x, defender.y, '#FFD700', 20);
+    spawnParticles(defender.x, defender.y, '#FF6B00', 10);
+    spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#FFD700');
+    dmgTexts.push({ x: attacker.x, y: attacker.y - attacker.r - 24, text: 'UPPER!!', life: 1.2, color: '#FFD700' });
+  } else {
+    // 連続パンチのコンボを進める（一定時間内に次の一発が入らなければ上でリセットされる）
+    attacker.comboCount = (attacker.comboCount || 0) + 1;
+    attacker.comboTimer = 30;
+
+    if (attacker.comboCount >= 3) {
+      // 3発目：強烈な一発で「パーン！」と吹っ飛ばす
+      const dmg = 45;
+      defender.hp = Math.max(0, defender.hp - dmg);
+      defender.hitTimer = 20;
+      attacker.punchCooldown = 24;
+      attacker.punchAnimTimer = 14;
+      attacker.comboCount = 0; // 吹っ飛ばしたらコンボはリセットして次のチェーンへ
+      sfxUppercut();
+      spawnParticles(defender.x, defender.y, '#FFD700', 16);
+      spawnParticles(defender.x, defender.y, '#FAC775', 10);
+      spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#FFD700');
+      dmgTexts.push({ x: attacker.x, y: attacker.y - attacker.r - 24, life: 1.2, color: '#FFD700' });
+      // 攻撃者から離れる方向へ大きく吹っ飛ばす
+      const distAB3 = dist || 1;
+      defender.vx = (dx / distAB3) * 22;
+      defender.vy = (dy / distAB3) * 22 - 6; // 少し浮かせつつ大きく飛ばす
+      defender.knockback = 45;
+      defender.hitstop = 12;
+    } else {
+      // 通常パンチ：被弾者だけ止めて連続パンチを可能に
+      const dmg = 45;
+      defender.hp = Math.max(0, defender.hp - dmg);
+      defender.hitTimer = 20;
+      attacker.punchCooldown = 12;   // CDを短くしてhitstop中に次が溜まる
+      attacker.punchAnimTimer = 10;
+      sfxPunch();
+      spawnParticles(defender.x, defender.y, '#FAC775', 12);
+      spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#FAC775');
+      const distAB = dist || 1;
+      defender.vx = (dx / distAB) * 1.5;  // ノックバック弱め＝その場で止まる
+      defender.vy = (dy / distAB) * 1.5;
+      defender.knockback = 8;
+      // 被弾者のみヒットストップ（攻撃者はCDが空いたら即次の一発）
+      defender.hitstop = 14;
+    }
+  }
+}
+
+// Darts攻撃
+function updateDarts_shoot(attacker) {
+  if (attacker.hp <= 0) return;
+  if (attacker.dartCooldown > 0) { attacker.dartCooldown--; return; }
+  attacker.burstCount = 3;
+  attacker.burstInterval = 0;
+  attacker.dartCooldown = 75;
+}
+function updateDarts_burst(attacker) {
+  if (!attacker.burstCount || attacker.burstCount <= 0) return;
+  if (attacker.burstInterval > 0) { attacker.burstInterval--; return; }
+  if (!target) return;
+  const spd = 5.0;
+  const dx = target.x - attacker.x, dy = target.y - attacker.y;
+  const d = Math.hypot(dx, dy) || 1;
+  darts.push({ x: attacker.x, y: attacker.y, vx: dx/d*spd, vy: dy/d*spd, stuck: false, stuckTimer: 0, owner: attacker });
+  sfxDartShoot();
+  attacker.throwTimer = 18; // 投げモーション表示フレーム数
+  attacker.burstCount--;
+  attacker.burstInterval = 3;
+}
+
+// 的が0になった時の放射ダーツ攻撃：1回分（32本）を発射するヘルパー
+function spawnDartTargetBurst(origin, owner) {
+  const burstCount = 32;
+  const burstSpd = 6.0;
+  for (let bi = 0; bi < burstCount; bi++) {
+    const ang = (Math.PI * 2 / burstCount) * bi;
+    const bx = Math.cos(ang), by = Math.sin(ang);
+    darts.push({
+      x: origin.x + bx * (origin.r + 10),
+      y: origin.y + by * (origin.r + 10),
+      vx: bx * burstSpd, vy: by * burstSpd,
+      stuck: false, stuckTimer: 0,
+      owner: owner,
+      isBurst: true
+    });
+  }
+  spawnParticles(origin.x, origin.y, '#FF3300', 40);
+  sfxUppercut();
+}
+
+function updateDartProjectiles() {
+  // 的の放射ダーツ攻撃（3連）の残り発射を処理
+  if (targetBurstPending > 0) {
+    targetBurstTimer--;
+    if (targetBurstTimer <= 0) {
+      spawnDartTargetBurst(targetBurstOrigin, targetBurstOwner);
+      targetBurstPending--;
+      targetBurstTimer = TARGET_BURST_INTERVAL;
+    }
+  }
+  for (let i = darts.length - 1; i >= 0; i--) {
+    const d = darts[i];
+    if (d.stuck) {
+      if (--d.stuckTimer <= 0) darts.splice(i, 1);
+      continue;
+    }
+    d.x += d.vx; d.y += d.vy;
+    // 的に当たる
+    if (target && Math.hypot(target.x - d.x, target.y - d.y) < target.r + 5) {
+      // ダーツだけが的にダメージを与える（バーストダーツはダメージ固定50）
+      const dmgPool = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,24,25,26,27,28,30,32,33,34,36,38,39,40,42,45,48,50];
+      const dmg = d.isBurst ? 50 : dmgPool[Math.floor(Math.random() * dmgPool.length)];
+      const remaining = target.hp;
+      // 本物のダーツ501ルールと同様：残りHPを超過(バースト)する場合はそのダメージはなかったことにする
+      if (dmg > remaining) {
+        spawnParticles(target.x, target.y, '#999999', 5);
+        dmgTexts.push({ x: target.x, y: target.y - 30, text: 'BUST!', life: 1.0, color: '#AAAAAA' });
+        d.stuck = true; d.stuckTimer = 40;
+        continue;
+      }
+      const prevHp = target.hp;
+      target.hp = Math.max(0, target.hp - dmg);
+      spawnParticles(target.x, target.y, '#FFD700', 6);
+      spawnDmg(target.x, target.y, dmg, '#FFD700');
+      // ぴったり0になったら的から32本のダーツが放射状に発射（3連、ダメージはすべて50）
+      if (prevHp > 0 && target.hp === 0) {
+        dmgTexts.push({ x: target.x, y: target.y - 40, text: '💥 BULLSEYE!! 3連射', life: 1.5, color: '#FF3300' });
+        // 的をリセット
+        const tv2 = randVel(rnd(2.5, 3.5));
+        target.hp = target.maxHp;
+        target.vx = tv2.vx; target.vy = tv2.vy;
+        // 放射ダーツ攻撃を3連発に設定（1発目は即発射、残り2発は間隔を空けて発射）
+        targetBurstOrigin = { x: target.x, y: target.y, r: target.r };
+        targetBurstOwner = d.owner;
+        spawnDartTargetBurst(targetBurstOrigin, targetBurstOwner);
+        targetBurstPending = TARGET_BURST_TOTAL - 1;
+        targetBurstTimer = TARGET_BURST_INTERVAL;
+      }
+      d.stuck = true; d.stuckTimer = 40;
+      continue;
+    }
+    // 相手に命中
+    const enemy = d.owner === p1char ? p2char : p1char;
+    // TTG未来も命中対象に含める
+    const dartTargets = [enemy];
+    if (ttgFuture && ttgFuture.hp > 0 && d.owner !== ttgFuture) dartTargets.push(ttgFuture);
+    let dartHit = false;
+    for (const tgt of dartTargets) {
+      if (tgt.hp > 0 && Math.hypot(tgt.x - d.x, tgt.y - d.y) < tgt.r + 5) {
+        const dmgPool = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,24,25,26,27,28,30,32,33,34,36,38,39,40,42,45,48,50];
+        const dmg = d.isBurst ? 50 : dmgPool[Math.floor(Math.random() * dmgPool.length)];
+        tgt.hp = Math.max(0, tgt.hp - dmg);
+        tgt.hitTimer = 10;
+        sfxDartHit();
+        spawnParticles(tgt.x, tgt.y, '#F0997B', 8);
+        spawnDmg(tgt.x, tgt.y - tgt.r - 12, dmg, '#F09595');
+        d.stuck = true; d.stuckTimer = 40; dartHit = true; break;
+      }
+    }
+    if (dartHit) continue;
+    // ピンポン玉との衝突
+    for (let j = pingBalls.length - 1; j >= 0; j--) {
+      const b = pingBalls[j];
+      const DR = 8; // ダーツの当たり判定半径
+      const dist = Math.hypot(b.x - d.x, b.y - d.y);
+      if (dist < b.r + DR) {
+        const nx = (d.x - b.x) / (dist || 1);
+        const ny = (d.y - b.y) / (dist || 1);
+        // ダーツを跳ね返す
+        const dot = d.vx * nx + d.vy * ny;
+        d.vx -= 2 * dot * nx; d.vy -= 2 * dot * ny;
+        // 押し出し：rに合わせた位置へ
+        d.x = b.x + nx * (b.r + DR);
+        d.y = b.y + ny * (b.r + DR);
+        // ピンポン玉にも反力
+        const bdot = b.vx * (-nx) + b.vy * (-ny);
+        b.vx -= 2 * bdot * (-nx); b.vy -= 2 * bdot * (-ny);
+        b.x = d.x - nx * (b.r + DR);
+        b.y = d.y - ny * (b.r + DR);
+        spawnParticles(d.x, d.y, '#CE93D8', 5);
+        break;
+      }
+    }
+    // 味方に反射
+    if (d.owner.hp > 0 && Math.hypot(d.owner.x - d.x, d.owner.y - d.y) < d.owner.r + 5) {
+      const nx2 = (d.x - d.owner.x) / (Math.hypot(d.x - d.owner.x, d.y - d.owner.y) || 1);
+      const ny2 = (d.y - d.owner.y) / (Math.hypot(d.x - d.owner.x, d.y - d.owner.y) || 1);
+      const dot2 = d.vx * nx2 + d.vy * ny2;
+      d.vx -= 2 * dot2 * nx2; d.vy -= 2 * dot2 * ny2;
+      d.x = d.owner.x + nx2 * (d.owner.r + 6);
+      d.y = d.owner.y + ny2 * (d.owner.r + 6);
+    }
+  }
+}
+
+// ============================================================
+// Tennis Guy攻撃
+// ============================================================
+function updateTennis(attacker, defender) {
+  if (attacker.hp <= 0) return;
+  if (attacker.smashCooldown > 0) { attacker.smashCooldown--; return; }
+
+  // 敵のダーツを打ち返す
+  for (let i = darts.length - 1; i >= 0; i--) {
+    const d = darts[i];
+    if (d.stuck) continue;
+    if (d.owner === attacker) continue; // 自分のダーツは打ち返さない
+    const dist = Math.hypot(attacker.x - d.x, attacker.y - d.y);
+    if (dist < attacker.r + 40) {
+      // 敵に向けて打ち返す
+      const tx = defender.x - d.x, ty = defender.y - d.y;
+      const td = Math.hypot(tx, ty) || 1;
+      d.vx = (tx / td) * 7;
+      d.vy = (ty / td) * 7;
+      d.owner = attacker;
+      attacker.swingBaseAngle = attacker.racketAngle; attacker.swingTimer = 18;
+      sfxRacketSwing();
+      spawnParticles(attacker.x, attacker.y, '#A5D6A7', 6);
+      attacker.smashCooldown = 180;
+      break;
+    }
+  }
+
+  // (テニスガイのピンポン球打ち返し処理は削除：pingpongガイ側で自動打ち返し済み)
+
+  // 直接打撃（打ち返す）- ラケットリーチ込み
+  const REACH = 40;
+  const dist = Math.hypot(defender.x - attacker.x, defender.y - attacker.y);
+  // ラケットの向きを敵方向へ更新
+  attacker.racketAngle = Math.atan2(defender.y - attacker.y, defender.x - attacker.x);
+  if (defender.hp > 0 && dist < attacker.r + defender.r + REACH) {
+    const dmg = 90;
+    defender.hp = Math.max(0, defender.hp - dmg);
+    defender.hitTimer = 10;
+    attacker.smashCooldown = 180;
+    const ax = defender.x - attacker.x, ay = defender.y - attacker.y;
+    const distAB = Math.hypot(ax, ay) || 1;
+    // 強く弾き飛ばす（baseSpdの4倍）
+    defender.vx = (ax / distAB) * defender.baseSpd * 4;
+    defender.vy = (ay / distAB) * defender.baseSpd * 4;
+    defender.knockback = 30;
+    attacker.swingBaseAngle = attacker.racketAngle; attacker.swingTimer = 18;
+    sfxTennisSmash();
+    spawnParticles(defender.x, defender.y, '#A5D6A7', 16);
+    spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#A5D6A7');
+  }
+}
+
+// ============================================================
+// Ping Pong Guy攻撃
+// ============================================================
+function updatePingpong(attacker, defender) {
+  // 初回1秒後に発射
+  if (!attacker.ballFired) {
+    if (!attacker.ballDelay) attacker.ballDelay = 60;
+    if (--attacker.ballDelay <= 0) { attacker.ballFired = true; firePingBall(attacker); }
+  }
+  // swingTimerカウントダウン（drawChar内でも減らしているが念のため）
+}
+
+function firePingBall(owner) {
+  const enemy = owner === p1char ? p2char : p1char;
+  const dx = enemy.x - owner.x, dy = enemy.y - owner.y;
+  const d = Math.hypot(dx, dy) || 1;
+  const spd = 16.0;
+  pingBalls.push({
+    x: owner.x, y: owner.y,
+    vx: (dx / d) * spd, vy: (dy / d) * spd,
+    r: 10, spd,
+    // 発射直後に自分自身（owner）へ即ヒット判定されて打ち返されてしまい、
+    // 敵に当たる前にボールの軌道が乱されるバグを防ぐため、
+    // hitCooldownを発射時から有効にして自身への衝突をしばらく無視する
+    trail: [], hitCooldown: 15, lastHit: owner,
+    lastDamaged: null, damageCooldown: 0
+  });
+  sfxPingFire();
+}
+
+function updatePingBalls() {
+  for (let i = pingBalls.length - 1; i >= 0; i--) {
+    const b = pingBalls[i];
+    b.trail.push({ x: b.x, y: b.y });
+    if (b.trail.length > 8) b.trail.shift();
+    // 連続ヒット防止クールダウンを更新
+    if (b.hitCooldown > 0) b.hitCooldown--;
+    if (b.damageCooldown > 0) b.damageCooldown--;
+
+    // サブステップで貫通防止
+    const spd = Math.hypot(b.vx, b.vy);
+    const steps = Math.ceil(spd / 6);
+    let hit = false;
+
+    for (let s = 0; s < steps && !hit; s++) {
+      b.x += b.vx / steps; b.y += b.vy / steps;
+
+      // 壁反射
+      if (b.x - b.r < 0)  { b.x = b.r;     b.vx =  Math.abs(b.vx); sfxPingWall(); }
+      if (b.x + b.r > W)  { b.x = W - b.r; b.vx = -Math.abs(b.vx); sfxPingWall(); }
+      if (b.y - b.r < 0)  { b.y = b.r;     b.vy =  Math.abs(b.vy); sfxPingWall(); }
+      if (b.y + b.r > H)  { b.y = H - b.r; b.vy = -Math.abs(b.vy); sfxPingWall(); }
+      // 速度を一定に保つ
+      const curSpd = Math.hypot(b.vx, b.vy);
+      if (curSpd > 0 && b.spd) { b.vx = (b.vx / curSpd) * b.spd; b.vy = (b.vy / curSpd) * b.spd; }
+
+      // 的に当たる
+      if (target && Math.hypot(target.x - b.x, target.y - b.y) < target.r + b.r) {
+        const nx = (b.x - target.x) / (Math.hypot(b.x - target.x, b.y - target.y) || 1);
+        const ny = (b.y - target.y) / (Math.hypot(b.x - target.x, b.y - target.y) || 1);
+        const dot = b.vx * nx + b.vy * ny;
+        b.vx -= 2 * dot * nx; b.vy -= 2 * dot * ny;
+        b.x = target.x + nx * (target.r + b.r);
+        b.y = target.y + ny * (target.r + b.r);
+        hit = true; break;
+      }
+
+      // 両キャラ＋TTG未来それぞれチェック
+      const pingTargets = [p1char, p2char];
+      if (ttgFuture && ttgFuture.hp > 0) pingTargets.push(ttgFuture);
+      for (const c of pingTargets) {
+        if (c.hp <= 0) continue;
+        if (Math.hypot(c.x - b.x, c.y - b.y) >= c.r + b.r) continue;
+        // 連続ヒット防止（同じキャラへの連打をクールダウンで防ぐ）
+        if (b.hitCooldown > 0 && b.lastHit === c) continue;
+        if (b.damageCooldown > 0 && b.lastDamaged === c) continue;
+
+        // ダメージのみ（貫通・反射なし）
+        {
+          if (c.type === 'pingpong') {
+            // pingpongキャラはボールを打ち返す。相手が打った球を打ち返した時のみダメージが入る
+            // （壁などに跳ねて自分が打った球が自分に戻ってきた場合はダメージなし）
+            const isOwnBall = (b.lastHit === c);
+            if (!isOwnBall) {
+              c.hp = Math.max(0, c.hp - 50);
+              c.hitTimer = 10;
+              spawnParticles(c.x, c.y, '#CE93D8', 10);
+              spawnDmg(c.x, c.y - c.r - 12, 50, '#CE93D8');
+            }
+            c.swingTimer = 18;
+            sfxPingReturn();
+            if (Math.abs(b.vx) >= Math.abs(b.vy)) {
+              b.vx = -b.vx;
+            } else {
+              b.vy = -b.vy;
+            }
+            b.lastHit = c;
+            b.hitCooldown = 15;
+            continue;
+          } else if (c.type === 'tennis' && c.smashCooldown <= 0) {
+            // テニスガイはラケットでボールを打ち返す（ダメージなし）※クールダウン中は打ち返せない
+            const enemyC = (c === p1char) ? p2char : p1char;
+            const tx = enemyC.x - b.x, ty = enemyC.y - b.y;
+            const td = Math.hypot(tx, ty) || 1;
+            const retSpd = Math.max(b.spd || 16, 16);
+            b.vx = (tx / td) * retSpd;
+            b.vy = (ty / td) * retSpd;
+            b.spd = retSpd;
+            c.racketAngle = Math.atan2(ty, tx);
+            c.swingBaseAngle = c.racketAngle; c.swingTimer = 18;
+            c.smashCooldown = 180;
+            sfxRacketSwing();
+            spawnParticles(c.x, c.y, '#A5D6A7', 8);
+            b.lastHit = c;
+            b.hitCooldown = 15;
+            continue;
+          } else {
+            c.hp = Math.max(0, c.hp - 50);
+            c.hitTimer = 10;
+            sfxPingHit();
+            spawnParticles(c.x, c.y, '#CE93D8', 10);
+            spawnDmg(c.x, c.y - c.r - 12, 50, '#CE93D8');
+            // 卓球ガイの「自分が打った球かどうか」の判定（lastHit）はここでは更新しない。
+            // ここは打ち返しではなく素通しの直撃なので、別カウンタで連続ヒットだけ防ぐ。
+            b.lastDamaged = c;
+            b.damageCooldown = 15;
+          }
+        }
+        // 貫通：hit フラグを立てずループ継続
+      }
+    }
+  }
+}
+
+function drawPingBall(b) {
+  // トレイル
+  for (let i = 0; i < b.trail.length; i++) {
+    const a = (i / b.trail.length) * 0.3;
+    ctx.beginPath();
+    ctx.arc(b.trail[i].x, b.trail[i].y, b.r * (i / b.trail.length), 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,183,94,${a})`;
+    ctx.fill();
+  }
+  // 本体
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+  ctx.fillStyle = '#FFE0B2';
+  ctx.fill();
+  ctx.strokeStyle = '#FFB74D'; ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+// ============================================================
+// Bomb Guy（爆弾ガイ）
+// ============================================================
+// 通常攻撃は持たず、「爆弾を持っている」という状態だけを管理する。
+// 爆弾は最初は爆弾ガイ自身が保持。敵に初めて触れた瞬間にタイマーが始動し、
+// 以後は誰か（敵味方問わず）に触れるたびに持ち主が変わるホットポテト方式。
+// タイマーが0になると保持者だけが大ダメージ（実質即死）を受ける。
+function updateBomb() {
+  if (!bomb || bomb.exploded) return;
+  if (bomb.passCooldown > 0) bomb.passCooldown--;
+
+  const holder = bomb.holder;
+  if (!holder || holder.hp <= 0) {
+    // 保持者が（爆弾以外の理由で）既に倒れている場合は爆弾を消して終了
+    bomb.exploded = true;
+    return;
+  }
+
+  // 接触判定：保持者以外の生存キャラに触れたら爆弾を受け渡す
+  if (bomb.passCooldown <= 0) {
+    const others = [p1char, p2char, p1twinB, p2twinB, ttgFuture, ttgFuture2]
+      .filter(c => c && c !== holder && c.hp > 0);
+    for (const other of others) {
+      const d = Math.hypot(other.x - holder.x, other.y - holder.y);
+      // resolveCollisionが距離をちょうど「半径の合計」まで補正するため、
+      // 厳密な不等号(<)だとほぼ判定が成立しない。余裕(+6)を持たせて確実に検出する。
+      if (d < holder.r + other.r + 6) {
+        if (!bomb.started) bomb.started = true; // 最初に敵へ触れた瞬間にタイマー始動
+        bomb.holder = other;
+        bomb.passCooldown = BOMB_PASS_COOLDOWN;
+        spawnParticles(other.x, other.y, '#FFD54F', 12);
+        sfxBombPass();
+        break;
+      }
+    }
+  }
+
+  if (!bomb.started) return; // まだ誰にも触れていないのでタイマーは進まない
+
+  bomb.timer--;
+  bomb.blinking = bomb.timer <= BOMB_BLINK_TIME;
+  // 点滅中は0.5秒ごとに警告ビープ
+  if (bomb.blinking && bomb.timer > 0 && bomb.timer % 30 === 0) sfxBombTick();
+
+  if (bomb.timer <= 0) {
+    // 爆発！保持者のみ大ダメージ（周囲への巻き込みなし）
+    const h = bomb.holder;
+    bomb.exploded = true;
+    h.hp = Math.max(0, h.hp - 1000);
+    h.hitTimer = 24;
+    spawnParticles(h.x, h.y, '#FF7043', 35);
+    spawnParticles(h.x, h.y, '#FFEB3B', 20);
+    spawnParticles(h.x, h.y, '#212121', 18);
+    spawnDmg(h.x, h.y - h.r - 12, 1000, '#FF5722');
+    dmgTexts.push({ x: h.x, y: h.y - h.r - 40, text: '爆発！', life: 1.3, color: '#FF5722' });
+    sfxBombExplode();
+  }
+}
+
+function drawBomb() {
+  if (!bomb || bomb.exploded) return;
+  const h = bomb.holder;
+  if (!h || h.hp <= 0) return;
+  const bx = h.x;
+  // ダイナマイト棒の中心位置（前より大きくなった分、頭上にしっかり配置）
+  const stickW = 24, stickH = 56, stickRadius = 7;
+  const stickCenterY = h.y - h.r - 46;
+  // 残り3秒からは高速点滅（赤⇔黒）で警告
+  const blinkOn = bomb.blinking && (Math.floor(bomb.timer / 4) % 2 === 0);
+
+  ctx.save();
+  ctx.translate(bx, stickCenterY);
+
+  // 導火線（棒の上端からくるっと伸びる）
+  ctx.strokeStyle = '#6D4C28';
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(0, -stickH / 2);
+  ctx.quadraticCurveTo(12, -stickH / 2 - 16, 4, -stickH / 2 - 28);
+  ctx.stroke();
+  // 火花（点滅中は大きく明るく）
+  const sparkR = blinkOn ? 7 : 4.5;
+  ctx.beginPath();
+  ctx.arc(4, -stickH / 2 - 28, sparkR, 0, Math.PI * 2);
+  ctx.fillStyle = blinkOn ? '#FFF59D' : '#FFA726';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(4, -stickH / 2 - 28, sparkR * 0.45, 0, Math.PI * 2);
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fill();
+
+  // ダイナマイトの棒本体（角丸の縦長スティック）
+  ctx.beginPath();
+  ctx.moveTo(-stickW / 2 + stickRadius, -stickH / 2);
+  ctx.arcTo(stickW / 2, -stickH / 2, stickW / 2, -stickH / 2 + stickRadius, stickRadius);
+  ctx.arcTo(stickW / 2, stickH / 2, stickW / 2 - stickRadius, stickH / 2, stickRadius);
+  ctx.arcTo(-stickW / 2, stickH / 2, -stickW / 2, stickH / 2 - stickRadius, stickRadius);
+  ctx.arcTo(-stickW / 2, -stickH / 2, -stickW / 2 + stickRadius, -stickH / 2, stickRadius);
+  ctx.closePath();
+  ctx.fillStyle = blinkOn ? '#FF5252' : '#D32F2F';
+  ctx.fill();
+  ctx.strokeStyle = '#6E0000';
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  // クラフト紙風の帯×2（ダイナマイトらしさを出す）
+  ctx.fillStyle = '#EAD3A0';
+  ctx.fillRect(-stickW / 2, -stickH / 2 + 11, stickW, 9);
+  ctx.fillRect(-stickW / 2, stickH / 2 - 20, stickW, 9);
+  ctx.strokeStyle = '#A9824B';
+  ctx.lineWidth = 1.2;
+  ctx.strokeRect(-stickW / 2, -stickH / 2 + 11, stickW, 9);
+  ctx.strokeRect(-stickW / 2, stickH / 2 - 20, stickW, 9);
+
+  // ハイライト（円柱の質感）
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+  ctx.fillRect(-stickW / 2 + 4, -stickH / 2 + 4, 5, stickH - 8);
+
+  ctx.restore();
+
+  // デジタルLCD風タイマー表示（始動前は出さない）
+  if (bomb.started) {
+    const secsNum = Math.max(0, bomb.timer / 60);
+    const secsStr = secsNum.toFixed(2).padStart(5, '0'); // 例: "08.42" / "20.00"
+    const panelW = 70, panelH = 26;
+    const panelY = stickCenterY + stickH / 2 + 18;
+    ctx.save();
+    ctx.translate(bx, panelY);
+    // 筐体（黒いLCDパネル）
+    ctx.beginPath();
+    if (typeof ctx.roundRect === 'function') {
+      ctx.roundRect(-panelW / 2, -panelH / 2, panelW, panelH, 5);
+    } else {
+      ctx.rect(-panelW / 2, -panelH / 2, panelW, panelH);
+    }
+    ctx.fillStyle = '#0d0d0d';
+    ctx.fill();
+    ctx.strokeStyle = blinkOn ? '#FF3B30' : '#555555';
+    ctx.lineWidth = blinkOn ? 3 : 2;
+    ctx.stroke();
+    // デジタル数字
+    ctx.font = 'bold 18px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = blinkOn ? '#FF5252' : '#39FF6A';
+    ctx.shadowColor = blinkOn ? '#FF5252' : '#39FF6A';
+    ctx.shadowBlur = 6;
+    ctx.fillText(secsStr, 0, 1);
+    ctx.restore();
+  }
+}
+
+// ============================================================
+// Landmine Guy（地雷ガイ）
+// ============================================================
+// 壁に激突した瞬間に、その場（足元）へ地雷を1つ設置する
+function plantLandmine(owner, wallSide) {
+  const mineR = 20;
+  let mx = owner.x, my = owner.y;
+  // 壁際にぴったりくっつくように座標を補正する
+  if (wallSide === 'left')   mx = mineR;
+  if (wallSide === 'right')  mx = W - mineR;
+  if (wallSide === 'top')    my = mineR;
+  if (wallSide === 'bottom') my = H - mineR;
+  landmines.push({ x: mx, y: my, r: mineR, owner, armTimer: 18, wallSide });
+  spawnParticles(mx, my, '#8D6E63', 12);
+  spawnParticles(mx, my, '#5D4037', 8);
+  dmgTexts.push({ x: mx, y: my - owner.r - 30, text: '地雷設置！', life: 1.0, color: '#FF8A65' });
+  sfxMinePlant();
+}
+
+// 毎フレーム、設置済みの地雷と全キャラの接触判定を行う（設置者自身には反応しない）
+function updateLandmines() {
+  if (landmines.length === 0) return;
+  const allChars = [p1char, p2char, p1twinB, p2twinB, ttgFuture, ttgFuture2].filter(c => c && c.hp > 0);
+  for (let i = landmines.length - 1; i >= 0; i--) {
+    const m = landmines[i];
+    if (m.armTimer > 0) { m.armTimer--; continue; } // 設置直後の誤爆防止
+    let exploded = false;
+    for (const c of allChars) {
+      if (c === m.owner) continue; // 設置した本人には反応しない
+      const d = Math.hypot(c.x - m.x, c.y - m.y);
+      if (d < c.r + m.r) {
+        explodeLandmine(m, c);
+        exploded = true;
+        break;
+      }
+    }
+    if (exploded) landmines.splice(i, 1);
+  }
+}
+
+function explodeLandmine(m, victim) {
+  const dmg = 180;
+  victim.hp = Math.max(0, victim.hp - dmg);
+  victim.hitTimer = 22;
+  const dx = victim.x - m.x, dy = victim.y - m.y;
+  const d = Math.hypot(dx, dy) || 1;
+  victim.vx = (dx / d) * 18;
+  victim.vy = (dy / d) * 18 - 8; // 少し浮かせて吹き飛ばす
+  victim.knockback = 35;
+  spawnParticles(m.x, m.y, '#FF7043', 32);
+  spawnParticles(m.x, m.y, '#FFEB3B', 18);
+  spawnParticles(m.x, m.y, '#3E2723', 16);
+  spawnDmg(victim.x, victim.y - victim.r - 12, dmg, '#FF5722');
+  dmgTexts.push({ x: m.x, y: m.y - 34, text: '💥爆発!', life: 1.3, color: '#FF7043' });
+  sfxMineExplode();
+}
+
+function drawLandmine(m) {
+  ctx.save();
+  ctx.translate(m.x, m.y);
+  // 設置された壁ごとに向き（平べったい面と影の方向）を回転させる
+  let mineAngle = 0;
+  if (m.wallSide === 'bottom') mineAngle = Math.PI;
+  else if (m.wallSide === 'left') mineAngle = -Math.PI / 2;
+  else if (m.wallSide === 'right') mineAngle = Math.PI / 2;
+  ctx.rotate(mineAngle);
+  const armed = m.armTimer <= 0;
+  // 影
+  ctx.beginPath();
+  ctx.ellipse(0, m.r * 0.15, m.r * 1.05, m.r * 0.5, 0, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.fill();
+  // 本体（ドーム状の地雷）
+  ctx.beginPath();
+  ctx.ellipse(0, 0, m.r, m.r * 0.62, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#4E342E';
+  ctx.fill();
+  ctx.strokeStyle = '#2b1a13';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  // 起爆スイッチ用のトゲ
+  for (let a = 0; a < 6; a++) {
+    const ang = (Math.PI * 2 / 6) * a;
+    const sx = Math.cos(ang) * m.r * 0.55;
+    const sy = Math.sin(ang) * m.r * 0.32;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(sx + Math.cos(ang) * 8, sy + Math.sin(ang) * 5 - 4);
+    ctx.strokeStyle = '#212121';
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  }
+  // 中央のランプ（起爆準備完了後は赤く点滅）
+  const pulse = (Math.sin(Date.now() / 130) + 1) / 2;
+  ctx.beginPath();
+  ctx.arc(0, -2, m.r * 0.3, 0, Math.PI * 2);
+  ctx.fillStyle = armed ? (pulse > 0.5 ? '#FF5252' : '#B71C1C') : '#757575';
+  ctx.fill();
+  ctx.restore();
+}
+
+// ============================================================
+// Gunman Guy（ガンマンガイ）
+// ============================================================
+const GUNMAN_BURST_MAX = 4;        // 連続で撃てる弾数
+const GUNMAN_OVERHEAT_TIME = 360;  // 連射後のクールダウン（延長：約4秒→約6秒）
+
+// 真横に並んだ瞬間に発砲を開始したら、以降は整列が崩れてもクールダウンに入るまで撃ち続ける
+function updateGunman(attacker, defender) {
+  if (attacker.hp <= 0 || defender.hp <= 0) return;
+  if (attacker.overheatCooldown > 0) { attacker.overheatCooldown--; return; }
+  if (attacker.gunCooldown > 0) { attacker.gunCooldown--; return; }
+
+  if (attacker.burstCount > 0) {
+    // 既に連射を開始している：整列チェックはせず、最初に狙った方向へ撃ち続ける
+    fireBullet(attacker, attacker.aimDir || 1);
+  } else {
+    // まだ連射を始めていない：真横に並んでいる時だけ発砲を開始する
+    const dx = defender.x - attacker.x;
+    const dy = defender.y - attacker.y;
+    if (dx === 0) return;
+    // 高さの差が半径の合計の一定割合以内なら「真横」とみなす
+    const alignThreshold = (attacker.r + defender.r) * 0.3;
+    if (Math.abs(dy) > alignThreshold) return;
+    fireBullet(attacker, dx > 0 ? 1 : -1);
+  }
+
+  attacker.burstCount = (attacker.burstCount || 0) + 1;
+  if (attacker.burstCount >= GUNMAN_BURST_MAX) {
+    // 連射しすぎたら弾切れ→クールダウンに入る
+    attacker.burstCount = 0;
+    attacker.overheatCooldown = GUNMAN_OVERHEAT_TIME;
+    dmgTexts.push({ x: attacker.x, y: attacker.y - attacker.r - 30, text: 'リロード中…', life: 1.0, color: '#FFCC80' });
+  } else {
+    attacker.gunCooldown = 4;
+  }
+}
+
+function fireBullet(owner, dir) {
+  const spd = 14;
+  bullets.push({
+    x: owner.x + dir * (owner.r + 10), y: owner.y,
+    vx: spd * dir, vy: 0, r: 6,
+    owner, trail: []
+  });
+  owner.gunFireTimer = 10;
+  owner.aimDir = dir;
+  spawnParticles(owner.x + dir * (owner.r + 6), owner.y, '#FFD54F', 6);
+  sfxGunShot();
+}
+
+// 毎フレーム、発射済みの銃弾の移動・命中判定を行う
+function updateBullets() {
+  if (bullets.length === 0) return;
+  const allChars = [p1char, p2char, p1twinB, p2twinB, ttgFuture, ttgFuture2].filter(c => c && c.hp > 0);
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.trail.push({ x: b.x, y: b.y });
+    if (b.trail.length > 6) b.trail.shift();
+    b.x += b.vx; b.y += b.vy;
+    if (b.x < -20 || b.x > W + 20) { bullets.splice(i, 1); continue; }
+    let hit = false;
+    for (const c of allChars) {
+      if (c === b.owner) continue;
+      if (Math.hypot(c.x - b.x, c.y - b.y) >= c.r + b.r) continue;
+      const dmg = 60;
+      c.hp = Math.max(0, c.hp - dmg);
+      c.hitTimer = 12;
+      spawnParticles(c.x, c.y, '#FFD54F', 10);
+      spawnParticles(c.x, c.y, '#795548', 6);
+      spawnDmg(c.x, c.y - c.r - 12, dmg, '#FFD54F');
+      sfxGunHit();
+      hit = true;
+      break;
+    }
+    if (hit) bullets.splice(i, 1);
+  }
+}
+
+function drawBullet(b) {
+  for (let i = 0; i < b.trail.length; i++) {
+    const a = (i / b.trail.length) * 0.5;
+    ctx.beginPath();
+    ctx.arc(b.trail[i].x, b.trail[i].y, b.r * 0.7, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,213,79,${a})`;
+    ctx.fill();
+  }
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+  ctx.fillStyle = '#FFD54F';
+  ctx.fill();
+  ctx.strokeStyle = '#795548';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+
+// ============================================================
+// 時間ループシミュレーション（実際の戦闘ロジックで計算）
+// ============================================================
+function runTimeLoopSimulation(id1, id2) {
+  const SIM_W = 500, SIM_H = 500;
+  const enemyId = (id1 === 'timetraveler') ? id2 : id1;
+
+  // シミュレーション用キャラ生成（実際のロジックに準拠）
+  function makeSimChar(type, side) {
+    const spd = 2.7;
+    const a = Math.random() * Math.PI * 2;
+    return {
+      x: side === 'ttg' ? 120 : 380,
+      y: 250,
+      vx: Math.cos(a) * spd, vy: Math.sin(a) * spd,
+      baseSpd: spd,
+      r: 55, hp: 1000, maxHp: 1000,
+      hitTimer: 0, hitstop: 0, knockback: 0,
+      trail: [],
+      type,
+      // Boxing
+      punchCooldown: 0, upperCooldown: 0, punchAnimTimer: 0, upperAnimTimer: 0, dodgeAnimTimer: 0, dodgeCooldown: 0,
+      // Darts
+      dartCooldown: 0, burstCount: 0, burstInterval: 0,
+      // Tennis
+      smashCooldown: 0, racketAngle: 0, swingTimer: 0, swingBaseAngle: 0,
+      // PingPong
+      ballFired: false, ballCooldown: 0,
+      // TTG
+      airCooldown: Math.floor(Math.random() * 60),
+    };
+  }
+
+  // シミュレーション用物理演算
+  function simMove(c) {
+    if (c.hitstop > 0) { c.hitstop--; return; }
+    c.x += c.vx; c.y += c.vy;
+    if (c.x - c.r < 0)  { c.x = c.r;         c.vx =  Math.abs(c.vx); }
+    if (c.x + c.r > SIM_W) { c.x = SIM_W-c.r; c.vx = -Math.abs(c.vx); }
+    if (c.y - c.r < 0)  { c.y = c.r;         c.vy =  Math.abs(c.vy); }
+    if (c.y + c.r > SIM_H) { c.y = SIM_H-c.r; c.vy = -Math.abs(c.vy); }
+    if (c.hitTimer > 0) c.hitTimer--;
+    if (c.knockback > 0) {
+      c.knockback--;
+      const spd = Math.hypot(c.vx, c.vy);
+      const tgt = c.baseSpd + (spd - c.baseSpd) * 0.85;
+      if (spd > 0) { c.vx = (c.vx/spd)*tgt; c.vy = (c.vy/spd)*tgt; }
+    } else {
+      const spd = Math.hypot(c.vx, c.vy);
+      if (spd > 0) { c.vx = (c.vx/spd)*c.baseSpd; c.vy = (c.vy/spd)*c.baseSpd; }
+    }
+  }
+
+  function simResolve(a, b) {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const minD = a.r + b.r;
+    if (dist >= minD) return;
+    const nx = dx/dist, ny = dy/dist;
+    const overlap = (minD-dist)/2;
+    a.x -= nx*overlap; a.y -= ny*overlap;
+    b.x += nx*overlap; b.y += ny*overlap;
+    const dvx = b.vx-a.vx, dvy = b.vy-a.vy;
+    const dot = dvx*nx + dvy*ny;
+    if (dot < 0) { a.vx += dot*nx; a.vy += dot*ny; b.vx -= dot*nx; b.vy -= dot*ny; }
+  }
+
+  // Boxing攻撃シミュレーション
+  function simBoxing(attacker, defender) {
+    if (attacker.hp <= 0 || defender.hp <= 0) return;
+    if (attacker.upperCooldown > 0) attacker.upperCooldown--;
+    if (attacker.punchCooldown > 0) { attacker.punchCooldown--; return; }
+    const dx = defender.x - attacker.x, dy = defender.y - attacker.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist >= attacker.r + defender.r + 5) return;
+    const absDxS = Math.abs(dx), absDyS = Math.abs(dy);
+    const isTooStraightDownS = absDyS > absDxS * 3;
+    const isUpperAngle = attacker.y > defender.y && attacker.upperCooldown === 0 && !isTooStraightDownS;
+    if (defender.dodgeCooldown === 0 && Math.random() < 0.18) {
+      defender.dodgeAnimTimer = 18;
+      defender.dodgeCooldown = 60;
+      attacker.punchCooldown = isUpperAngle ? 10 : 6;
+      const ndx = dx / (dist || 1), ndy = dy / (dist || 1);
+      defender.vx = -ndx * 6;
+      defender.vy = -ndy * 6;
+      defender.knockback = 16;
+      return;
+    }
+    if (isUpperAngle) {
+      defender.hp = Math.max(0, defender.hp - 120);
+      defender.hitTimer = 15; attacker.upperCooldown = 120; attacker.punchCooldown = 20;
+      attacker.punchAnimTimer = 20; attacker.upperAnimTimer = 20;
+      defender.vx = dx/(dist||1)*2; defender.vy = -10; defender.knockback = 45; defender.hitstop = 8;
+    } else {
+      defender.hp = Math.max(0, defender.hp - 50);
+      defender.hitTimer = 10; attacker.punchCooldown = 10;
+    }
+  }
+
+  // Tennis攻撃シミュレーション
+  function simTennis(attacker, defender, simDarts, simPingBalls) {
+    if (attacker.hp <= 0) return;
+    if (attacker.smashCooldown > 0) { attacker.smashCooldown--; return; }
+    // ダーツ打ち返し
+    for (const d of simDarts) {
+      if (d.stuck || d.owner === attacker) continue;
+      if (Math.hypot(attacker.x - d.x, attacker.y - d.y) < attacker.r + 40) {
+        const tx = defender.x-d.x, ty = defender.y-d.y;
+        const td = Math.hypot(tx,ty)||1;
+        d.vx = (tx/td)*7; d.vy = (ty/td)*7; d.owner = attacker;
+        attacker.smashCooldown = 180; return;
+      }
+    }
+    // ピンポン打ち返し
+    for (const b of simPingBalls) {
+      if (b.owner === attacker) continue;
+      if (Math.hypot(attacker.x - b.x, attacker.y - b.y) < attacker.r + b.r + 40) {
+        const tx = defender.x-b.x, ty = defender.y-b.y;
+        const td = Math.hypot(tx,ty)||1;
+        const spd = Math.max(Math.hypot(b.vx,b.vy),10)*1.5;
+        b.vx = (tx/td)*spd; b.vy = (ty/td)*spd;
+        b.x = attacker.x+(tx/td)*(attacker.r+b.r);
+        b.y = attacker.y+(ty/td)*(attacker.r+b.r);
+        b.owner = attacker; attacker.smashCooldown = 180; return;
+      }
+    }
+    // 直接打撃
+    const dist = Math.hypot(defender.x-attacker.x, defender.y-attacker.y);
+    if (defender.hp > 0 && dist < attacker.r + defender.r + 40) {
+      const dmg = 80;
+      defender.hp = Math.max(0, defender.hp - dmg);
+      defender.hitTimer = 10; attacker.smashCooldown = 180;
+      const ax = defender.x-attacker.x, ay = defender.y-attacker.y;
+      const dAB = Math.hypot(ax,ay)||1;
+      defender.vx = (ax/dAB)*defender.baseSpd*4;
+      defender.vy = (ay/dAB)*defender.baseSpd*4;
+      defender.knockback = 30;
+    }
+  }
+
+  // Darts攻撃シミュレーション
+  function simDartsShoot(attacker, simDarts, simTarget) {
+    if (attacker.hp <= 0) return;
+    if (attacker.dartCooldown > 0) { attacker.dartCooldown--; return; }
+    attacker.burstCount = 3; attacker.burstInterval = 0; attacker.dartCooldown = 75;
+  }
+  function simDartsBurst(attacker, simDarts, simTarget) {
+    if (!attacker.burstCount || attacker.burstCount <= 0) return;
+    if (attacker.burstInterval > 0) { attacker.burstInterval--; return; }
+    if (!simTarget) return;
+    const spd = 5.0;
+    const dx = simTarget.x - attacker.x, dy = simTarget.y - attacker.y;
+    const d = Math.hypot(dx,dy)||1;
+    simDarts.push({ x: attacker.x, y: attacker.y, vx: dx/d*spd, vy: dy/d*spd, stuck: false, stuckTimer: 0, owner: attacker });
+    attacker.burstCount--; attacker.burstInterval = 3;
+  }
+  function simUpdateDarts(simDarts, simTarget, ttg, enemy) {
+    for (let i = simDarts.length-1; i >= 0; i--) {
+      const d = simDarts[i];
+      if (d.stuck) { if (--d.stuckTimer <= 0) simDarts.splice(i,1); continue; }
+      d.x += d.vx; d.y += d.vy;
+      if (simTarget && Math.hypot(simTarget.x-d.x, simTarget.y-d.y) < simTarget.r+5) { simDarts.splice(i,1); continue; }
+      // 壁反射なし→画面外は消滅
+      if (d.x < 0 || d.x > SIM_W || d.y < 0 || d.y > SIM_H) { simDarts.splice(i,1); continue; }
+      const tgt = d.owner === ttg ? enemy : ttg;
+      if (tgt.hp > 0 && Math.hypot(tgt.x-d.x, tgt.y-d.y) < tgt.r+5) {
+        const dmgPool = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,24,25,26,27,28,30,32,33,34,36,38,39,40,42,45,48,
+                        50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,51,54,57,60];
+        const dmg = dmgPool[Math.floor(Math.random()*dmgPool.length)];
+        tgt.hp = Math.max(0, tgt.hp - dmg);
+        tgt.hitTimer = 10;
+        d.stuck = true; d.stuckTimer = 40;
+      }
+    }
+  }
+
+  // PingPong攻撃シミュレーション
+  function simFirePingBall(owner, simPingBalls, enemy) {
+    const dx = enemy.x-owner.x, dy = enemy.y-owner.y;
+    const d = Math.hypot(dx,dy)||1;
+    const spd = 12.0;
+    simPingBalls.push({ x: owner.x, y: owner.y, vx: dx/d*spd, vy: dy/d*spd, r: 10, owner, trail: [], hitCooldown: 0, lastHit: null });
+  }
+  function simUpdatePingBalls(simPingBalls, ttg, enemy, simTarget) {
+    for (let i = simPingBalls.length-1; i >= 0; i--) {
+      const b = simPingBalls[i];
+      if (b.hitCooldown > 0) b.hitCooldown--;
+      const spd = Math.hypot(b.vx, b.vy);
+      const steps = Math.ceil(spd/6);
+      for (let s = 0; s < steps; s++) {
+        b.x += b.vx/steps; b.y += b.vy/steps;
+        if (b.x-b.r < 0)     { b.x = b.r;       b.vx =  Math.abs(b.vx); }
+        if (b.x+b.r > SIM_W) { b.x = SIM_W-b.r; b.vx = -Math.abs(b.vx); }
+        if (b.y-b.r < 0)     { b.y = b.r;       b.vy =  Math.abs(b.vy); }
+        if (b.y+b.r > SIM_H) { b.y = SIM_H-b.r; b.vy = -Math.abs(b.vy); }
+        if (simTarget && Math.hypot(simTarget.x-b.x, simTarget.y-b.y) < simTarget.r+b.r) {
+          const nx = (b.x-simTarget.x)/(Math.hypot(b.x-simTarget.x,b.y-simTarget.y)||1);
+          const ny = (b.y-simTarget.y)/(Math.hypot(b.x-simTarget.x,b.y-simTarget.y)||1);
+          const dot = b.vx*nx+b.vy*ny;
+          b.vx -= 2*dot*nx; b.vy -= 2*dot*ny;
+          b.x = simTarget.x+nx*(simTarget.r+b.r); b.y = simTarget.y+ny*(simTarget.r+b.r);
+          break;
+        }
+        for (const c of [ttg, enemy]) {
+          if (c.hp <= 0) continue;
+          if (Math.hypot(c.x-b.x, c.y-b.y) >= c.r+b.r) continue;
+          if (b.hitCooldown > 0 && b.lastHit === c) continue;
+          const nx = (b.x-c.x)/(Math.hypot(b.x-c.x,b.y-c.y)||1);
+          const ny = (b.y-c.y)/(Math.hypot(b.x-c.x,b.y-c.y)||1);
+          const dot = b.vx*nx+b.vy*ny;
+          b.vx -= 2*dot*nx; b.vy -= 2*dot*ny;
+          b.x = c.x+nx*(c.r+b.r); b.y = c.y+ny*(c.r+b.r);
+          c.hp = Math.max(0, c.hp-50); c.hitTimer = 10;
+          b.lastHit = c; b.hitCooldown = 15; break;
+        }
+      }
+    }
+  }
+
+  // 空気砲シミュレーション
+  function simFireAir(shooter, enemy, simAirBullets) {
+    if (enemy.hp <= 0) return;
+    const lead = 15;
+    const tx = enemy.x + enemy.vx*lead, ty = enemy.y + enemy.vy*lead;
+    const dx = tx-shooter.x, dy = ty-shooter.y;
+    const d = Math.hypot(dx,dy)||1;
+    simAirBullets.push({ x: shooter.x, y: shooter.y, vx: (dx/d)*7, vy: (dy/d)*7, r: 13, owner: shooter, age: 0, maxAge: 85 });
+  }
+  function simUpdateAirBullets(simAirBullets, enemy) {
+    for (let i = simAirBullets.length-1; i >= 0; i--) {
+      const b = simAirBullets[i];
+      b.x += b.vx; b.y += b.vy; b.age++;
+      if (b.x-b.r < 0 || b.x+b.r > SIM_W || b.y-b.r < 0 || b.y+b.r > SIM_H || b.age >= b.maxAge) {
+        simAirBullets.splice(i,1); continue;
+      }
+      if (enemy.hp > 0 && Math.hypot(enemy.x-b.x, enemy.y-b.y) < enemy.r+b.r) {
+        enemy.hp = Math.max(0, enemy.hp-30);
+        enemy.hitTimer = 10;
+        const nx = (enemy.x-b.x)/(Math.hypot(enemy.x-b.x,enemy.y-b.y)||1);
+        const ny = (enemy.y-b.y)/(Math.hypot(enemy.x-b.x,enemy.y-b.y)||1);
+        enemy.vx = nx*4; enemy.vy = ny*4; enemy.knockback = 15;
+        simAirBullets.splice(i,1); continue;
+      }
+    }
+  }
+
+  // 的（ダーツ用ターゲット）のシミュレーション
+  function makeSimTarget() {
+    const tv = { vx: (Math.random()-0.5)*6, vy: (Math.random()-0.5)*6 };
+    return { x: SIM_W/2, y: SIM_H/2, vx: tv.vx, vy: tv.vy, r: 25 };
+  }
+  function simMoveTarget(t) {
+    t.x += t.vx; t.y += t.vy;
+    if (t.x-t.r < 0) { t.x = t.r; t.vx = Math.abs(t.vx); }
+    if (t.x+t.r > SIM_W) { t.x = SIM_W-t.r; t.vx = -Math.abs(t.vx); }
+    if (t.y-t.r < 0) { t.y = t.r; t.vy = Math.abs(t.vy); }
+    if (t.y+t.r > SIM_H) { t.y = SIM_H-t.r; t.vy = -Math.abs(t.vy); }
+  }
+
+  // ─── 複数回シミュレーションして収束値を求める ───
+  const RUNS = 8;
+  const FRAMES = 6000;
+  const TTG_MAX = 1000;
+  let samples = [];
+
+  for (let run = 0; run < RUNS; run++) {
+    const ttg = makeSimChar('timetraveler', 'ttg');
+    const enemy = makeSimChar(enemyId, 'enemy');
+    const simDarts = [];
+    const simPingBalls = [];
+    const simAirBullets = [];
+    const simTarget = (enemyId === 'darts') ? makeSimTarget() : null;
+    let foundX = null;
+
+    for (let f = 0; f < FRAMES && ttg.hp > 0 && enemy.hp > 0; f++) {
+      simMove(ttg);
+      simMove(enemy);
+      simResolve(ttg, enemy);
+      if (simTarget) simMoveTarget(simTarget);
+
+      // 敵の攻撃
+      if (enemyId === 'boxing') simBoxing(enemy, ttg);
+      if (enemyId === 'darts') { simDartsShoot(enemy, simDarts, simTarget); simDartsBurst(enemy, simDarts, simTarget); }
+      if (enemyId === 'tennis') simTennis(enemy, ttg, simDarts, simPingBalls);
+      if (enemyId === 'pingpong') {
+        if (!enemy.ballFired) { enemy.ballFired = true; simFirePingBall(enemy, simPingBalls, ttg); }
+      }
+      if (enemyId === 'timetraveler') {
+        if (enemy.airCooldown > 0) enemy.airCooldown--;
+        else { simFireAir(enemy, ttg, simAirBullets); enemy.airCooldown = 120; }
+      }
+
+      // TTGの攻撃（空気砲）
+      if (ttg.airCooldown > 0) ttg.airCooldown--;
+      else { simFireAir(ttg, enemy, simAirBullets); ttg.airCooldown = 120; }
+
+      if (enemyId === 'darts') simUpdateDarts(simDarts, simTarget, ttg, enemy);
+      if (enemyId === 'pingpong') simUpdatePingBalls(simPingBalls, ttg, enemy, simTarget);
+      simUpdateAirBullets(simAirBullets, enemy);  // TTGの空気砲は敵に当てる
+
+      // TTGが500HP以下になった瞬間を記録
+      if (ttg.hp < 500 && foundX === null) {
+        foundX = ttg.hp;
+        break;
+      }
+    }
+    if (foundX === null) foundX = Math.max(0, Math.min(499, ttg.hp));
+    samples.push(foundX);
+  }
+
+  // 外れ値を除いた中央値を収束値とする
+  samples.sort((a, b) => a - b);
+  const mid = Math.floor(samples.length / 2);
+  const median = samples.length % 2 !== 0 ? samples[mid] : Math.round((samples[mid-1]+samples[mid])/2);
+  return Math.max(0, median);
+}
+
+// ============================================================
+// Time Traveler Guy ロジック
+// ============================================================
+function spawnTimeTravelEffect(x, y) {
+  timeTravelEffects.push({ x, y, life: 1.0, maxLife: 1.0 });
+}
+
+function spawnTTGFuture(ttg, enemy, x) {
+  ttgFuture = spawnTTGFutureObj(ttg, enemy, x);
+}
+
+function spawnTTGFutureObj(ttg, enemy, x) {
+  // 未来のTTGが出現（フィールドのランダムな位置）
+  const side = ttg.x < W/2 ? 'right' : 'left';
+  const fx = side === 'right' ? rnd(W-180, W-80) : rnd(80, 180);
+  const fy = rnd(80, H-80);
+  const sv = randVel(rnd(2.5, 3.5));
+  const futureObj = {
+    x: fx, y: fy,
+    vx: sv.vx, vy: sv.vy, baseSpd: Math.hypot(sv.vx, sv.vy),
+    r: 55, hp: x, maxHp: 1000,  // maxHpは通常TTGと同じ1000
+    hitTimer: 0, hitstop: 0, knockback: 0,
+    trail: [],
+    name: 'Time Traveler Guy (未来)', emoji: '⌛',
+    color: '#00838F', lightColor: '#4DD0E1',
+    type: 'timetraveler_future',
+    airCooldown: 60,
+    owner: ttg,
+    spawnImageTimer: 60  // 約3秒間 timetravel.png を表示（60fps想定）
+  };
+  spawnParticles(fx, fy, '#00BCD4', 30);
+  sfxTTGSpawn();
+  return futureObj;
+}
+
+function fireAirCannon(shooter, enemy) {
+  if (enemy.hp <= 0) return;
+  // 予測射撃（少し先を狙う）
+  const lead = 15;
+  const tx = enemy.x + enemy.vx * lead;
+  const ty = enemy.y + enemy.vy * lead;
+  const dx = tx - shooter.x, dy = ty - shooter.y;
+  const d = Math.hypot(dx, dy) || 1;
+  const spd = 7;
+  airBullets.push({
+    x: shooter.x, y: shooter.y,
+    vx: (dx/d)*spd, vy: (dy/d)*spd,
+    r: 13, owner: shooter,
+    trail: [], age: 0, maxAge: 85
+  });
+  sfxAirShoot();
+  spawnParticles(shooter.x, shooter.y, '#00E5FF', 5);
+}
+
+function updateTTGFuture(ttgPresent, enemy) {
+  if (!ttgFuture || ttgFuture.hp <= 0) return;
+
+  // 移動
+  if (ttgFuture.hitstop > 0) { ttgFuture.hitstop--; }
+  else {
+    ttgFuture.trail.push({ x: ttgFuture.x, y: ttgFuture.y });
+    if (ttgFuture.trail.length > 10) ttgFuture.trail.shift();
+    ttgFuture.x += ttgFuture.vx; ttgFuture.y += ttgFuture.vy;
+    if (ttgFuture.x - ttgFuture.r < 0)  { ttgFuture.x = ttgFuture.r;     ttgFuture.vx =  Math.abs(ttgFuture.vx); }
+    if (ttgFuture.x + ttgFuture.r > W)  { ttgFuture.x = W - ttgFuture.r; ttgFuture.vx = -Math.abs(ttgFuture.vx); }
+    if (ttgFuture.y - ttgFuture.r < 0)  { ttgFuture.y = ttgFuture.r;     ttgFuture.vy =  Math.abs(ttgFuture.vy); }
+    if (ttgFuture.y + ttgFuture.r > H)  { ttgFuture.y = H - ttgFuture.r; ttgFuture.vy = -Math.abs(ttgFuture.vy); }
+    if (ttgFuture.hitTimer > 0) ttgFuture.hitTimer--;
+    if (ttgFuture.knockback > 0) {
+      ttgFuture.knockback--;
+      const spd = Math.hypot(ttgFuture.vx, ttgFuture.vy);
+      const tgt = ttgFuture.baseSpd + (spd - ttgFuture.baseSpd) * 0.85;
+      if (spd > 0) { ttgFuture.vx = (ttgFuture.vx/spd)*tgt; ttgFuture.vy = (ttgFuture.vy/spd)*tgt; }
+    } else {
+      const spd = Math.hypot(ttgFuture.vx, ttgFuture.vy);
+      if (spd > 0) { ttgFuture.vx = (ttgFuture.vx/spd)*ttgFuture.baseSpd; ttgFuture.vy = (ttgFuture.vy/spd)*ttgFuture.baseSpd; }
+    }
+  }
+
+  // TTGPresent と TTGFuture の衝突
+  if (ttgPresent && ttgPresent.hp > 0) {
+    resolveCollision(ttgPresent, ttgFuture);
+  }
+
+  // 敵ツインズBとの衝突（重なり防止）
+  const ownerIsP1f = ttgFuture.owner === p1char;
+  const futEnemyTwinB = ownerIsP1f ? p2twinB : p1twinB;
+  if (futEnemyTwinB && futEnemyTwinB.hp > 0) {
+    resolveCollision(futEnemyTwinB, ttgFuture);
+  }
+
+  // 空気砲発射（CDカウントダウンは常に進める、return しない）
+  if (ttgFuture.airCooldown > 0) {
+    ttgFuture.airCooldown--;
+  } else if (enemy && enemy.hp > 0) {
+    // 敵の双子Bが生きていればランダムで狙い分ける
+    const enemyTwinBf = ownerIsP1f ? p2twinB : p1twinB;
+    const airTarget = (enemyTwinBf && enemyTwinBf.hp > 0 && Math.random() < 0.5) ? enemyTwinBf : enemy;
+    fireAirCannon(ttgFuture, airTarget);
+    ttgFuture.airCooldown = 120;
+  }
+}
+
+function updateTTGFuture2(ttgPresent, enemy) {
+  if (!ttgFuture2 || ttgFuture2.hp <= 0) return;
+  const c = ttgFuture2;
+
+  // 移動
+  if (c.hitstop > 0) { c.hitstop--; }
+  else {
+    c.trail.push({ x: c.x, y: c.y });
+    if (c.trail.length > 10) c.trail.shift();
+    c.x += c.vx; c.y += c.vy;
+    if (c.x - c.r < 0)  { c.x = c.r;     c.vx =  Math.abs(c.vx); }
+    if (c.x + c.r > W)  { c.x = W - c.r; c.vx = -Math.abs(c.vx); }
+    if (c.y - c.r < 0)  { c.y = c.r;     c.vy =  Math.abs(c.vy); }
+    if (c.y + c.r > H)  { c.y = H - c.r; c.vy = -Math.abs(c.vy); }
+    if (c.hitTimer > 0) c.hitTimer--;
+    if (c.knockback > 0) {
+      c.knockback--;
+      const spd = Math.hypot(c.vx, c.vy);
+      const tgt = c.baseSpd + (spd - c.baseSpd) * 0.85;
+      if (spd > 0) { c.vx = (c.vx/spd)*tgt; c.vy = (c.vy/spd)*tgt; }
+    } else {
+      const spd = Math.hypot(c.vx, c.vy);
+      if (spd > 0) { c.vx = (c.vx/spd)*c.baseSpd; c.vy = (c.vy/spd)*c.baseSpd; }
+    }
+  }
+
+  // 現在のTTGとの衝突
+  if (ttgPresent && ttgPresent.hp > 0) {
+    resolveCollision(ttgPresent, c);
+  }
+  // ttgFuture と ttgFuture2 の衝突
+  if (ttgFuture && ttgFuture.hp > 0) {
+    resolveCollision(ttgFuture, c);
+  }
+
+  // 空気砲発射（CDカウントダウンは常に進める、return しない）
+  if (c.airCooldown > 0) {
+    c.airCooldown--;
+  } else if (enemy && enemy.hp > 0) {
+    fireAirCannon(c, enemy);
+    c.airCooldown = 120;
+  }
+}
+
+// TTG vs TTG のとき p2 の空気砲（p1に当てる）を処理する
+function updateAirBulletsSide(targetChar) {
+  for (let i = airBullets.length - 1; i >= 0; i--) {
+    const b = airBullets[i];
+    // owner が p2char か ttgFuture2 の弾のみ
+    if (b.owner !== p2char && b.owner !== ttgFuture2) continue;
+    // この弾は既に updateAirBullets(p2char) で処理済みのためスキップ
+    // ここでは p1char を標的にする
+    if (targetChar.hp > 0 && Math.hypot(targetChar.x - b.x, targetChar.y - b.y) < targetChar.r + b.r) {
+      const dmg = 30;
+      targetChar.hp = Math.max(0, targetChar.hp - dmg);
+      targetChar.hitTimer = 10;
+      const nx = (targetChar.x - b.x) / (Math.hypot(targetChar.x - b.x, targetChar.y - b.y) || 1);
+      const ny = (targetChar.y - b.y) / (Math.hypot(targetChar.x - b.x, targetChar.y - b.y) || 1);
+      targetChar.vx = nx * 4; targetChar.vy = ny * 4;
+      targetChar.knockback = 15;
+      sfxAirHit();
+      spawnParticles(targetChar.x, targetChar.y, '#00E5FF', 10);
+      spawnParticles(targetChar.x, targetChar.y, '#80DEEA', 6);
+      spawnDmg(targetChar.x, targetChar.y - targetChar.r - 12, dmg, '#00E5FF');
+      airBullets.splice(i, 1); continue;
+    }
+  }
+}
+
+function updateAirBullets(defaultEnemy) {
+  // TTG vs TTG のとき、弾の owner に応じて標的を決める
+  const isTTGvsTTG = (p1char.type === 'timetraveler' && p2char.type === 'timetraveler');
+
+  for (let i = airBullets.length - 1; i >= 0; i--) {
+    const b = airBullets[i];
+    b.trail.push({ x: b.x, y: b.y });
+    if (b.trail.length > 6) b.trail.shift();
+    b.x += b.vx; b.y += b.vy;
+    b.age++;
+
+    // 壁や寿命で消滅
+    if (b.x - b.r < 0 || b.x + b.r > W || b.y - b.r < 0 || b.y + b.r > H || b.age >= b.maxAge) {
+      airBullets.splice(i, 1); continue;
+    }
+
+    // 標的リストを決定（ownerの反対陣営のキャラ全員）
+    let targets;
+    if (isTTGvsTTG) {
+      const ownerIsP1 = (b.owner === p1char || b.owner === ttgFuture);
+      if (ownerIsP1) {
+        // p1側の弾 → p2char と ttgFuture2 に当たる
+        targets = [p2char];
+        if (ttgFuture2 && ttgFuture2.hp > 0) targets.push(ttgFuture2);
+      } else {
+        // p2側の弾 → p1char と ttgFuture に当たる
+        targets = [p1char];
+        if (ttgFuture && ttgFuture.hp > 0) targets.push(ttgFuture);
+      }
+    } else {
+      // 通常（TTG vs 非TTG）: defaultEnemy と、存在すれば ttgFuture も対象
+      targets = [defaultEnemy];
+      // ツインズの双子Bも標的に含める
+      const defTwinB = (defaultEnemy === p1char) ? p1twinB : (defaultEnemy === p2char ? p2twinB : null);
+      if (defTwinB && defTwinB.hp > 0) targets.push(defTwinB);
+      // 非TTG側が撃った弾はttgFutureにも当たる
+      if (b.owner !== p1char && b.owner !== ttgFuture && ttgFuture && ttgFuture.hp > 0) targets.push(ttgFuture);
+    }
+
+    let hit = false;
+    for (const enemy of targets) {
+      if (!enemy || enemy.hp <= 0) continue;
+      if (Math.hypot(enemy.x - b.x, enemy.y - b.y) >= enemy.r + b.r) continue;
+      const dmg = 30;
+      enemy.hp = Math.max(0, enemy.hp - dmg);
+      enemy.hitTimer = 10;
+      const nx = (enemy.x - b.x) / (Math.hypot(enemy.x - b.x, enemy.y - b.y) || 1);
+      const ny = (enemy.y - b.y) / (Math.hypot(enemy.x - b.x, enemy.y - b.y) || 1);
+      enemy.vx = nx * 4; enemy.vy = ny * 4;
+      enemy.knockback = 15;
+      sfxAirHit();
+      spawnParticles(enemy.x, enemy.y, '#00E5FF', 10);
+      spawnParticles(enemy.x, enemy.y, '#80DEEA', 6);
+      spawnDmg(enemy.x, enemy.y - enemy.r - 12, dmg, '#00E5FF');
+      hit = true;
+      break;
+    }
+    if (hit) { airBullets.splice(i, 1); continue; }
+  }
+}
+
+function drawAirBullet(b) {
+  // トレイル
+  for (let i = 0; i < b.trail.length; i++) {
+    const a = (i / b.trail.length) * 0.2;
+    ctx.beginPath();
+    ctx.arc(b.trail[i].x, b.trail[i].y, b.r * (i / b.trail.length), 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(0,229,255,${a})`;
+    ctx.fill();
+  }
+  // 空気弾本体（半透明の衝撃波）
+  const fade = 1 - b.age / b.maxAge;
+  // 外輪
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r + 4, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(0,229,255,${fade * 0.5})`;
+  ctx.lineWidth = 3; ctx.stroke();
+  // 中心
+  const grad = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
+  grad.addColorStop(0, `rgba(255,255,255,${fade * 0.9})`);
+  grad.addColorStop(0.4, `rgba(0,229,255,${fade * 0.7})`);
+  grad.addColorStop(1, `rgba(0,188,212,${fade * 0.1})`);
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+  ctx.fillStyle = grad; ctx.fill();
+  // 圧縮波紋
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r * 0.55, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(224,247,250,${fade * 0.7})`; ctx.lineWidth = 2; ctx.stroke();
+}
+
+function drawTimeTravelEffect(e) {
+  if (!timetravel_IMG.complete || timetravel_IMG.naturalWidth === 0) return;
+  const imgW = timetravel_IMG.naturalWidth;
+  const imgH = timetravel_IMG.naturalHeight;
+  const size = 140;
+  const scale = size / Math.max(imgW, imgH);
+  const dw = imgW * scale;
+  const dh = imgH * scale;
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, e.life / e.maxLife * 1.5);
+  ctx.drawImage(timetravel_IMG, e.x - dw / 2, e.y - dh / 2, dw, dh);
+  ctx.restore();
+}
+
+function drawTTGFuture() {
+  if (!ttgFuture) return;
+  drawTTGFutureObj(ttgFuture);
+}
+
+function drawTTGFutureObj(c) {
+  if (!c) return;
+  if (c.hp <= 0) return;
+  // 本体（出現直後はtimetravel.png、その後はtimetravelarGuy.png）
+  if (c.spawnImageTimer > 0) {
+    c.spawnImageTimer--;
+    if (timetravel_IMG.complete && timetravel_IMG.naturalWidth > 0) {
+      const imgW = timetravel_IMG.naturalWidth;
+      const imgH = timetravel_IMG.naturalHeight;
+      const scale = (c.r * 2.5) / Math.max(imgW, imgH);
+      const dw = imgW * scale;
+      const dh = imgH * scale;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      ctx.drawImage(timetravel_IMG, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+    }
+  } else if (timetravelarGuy_IMG.complete && timetravelarGuy_IMG.naturalWidth > 0) {
+    const imgW = timetravelarGuy_IMG.naturalWidth;
+    const imgH = timetravelarGuy_IMG.naturalHeight;
+    const scale = (c.r * 2.2) / Math.max(imgW, imgH);
+    const dw = imgW * scale;
+    const dh = imgH * scale;
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.drawImage(timetravelarGuy_IMG, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
+  }
+}
+
+
+function drawTarget() {
+  for (let i = 0; i < target.trail.length; i++) {
+    const a = (i / target.trail.length) * 0.25;
+    ctx.beginPath();
+    ctx.arc(target.trail[i].x, target.trail[i].y, target.r * 0.5 * (i / target.trail.length), 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,220,50,${a})`;
+    ctx.fill();
+  }
+  const { x, y, r } = target;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y, r*0.75, 0, Math.PI*2); ctx.fillStyle = '#e22'; ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y, r*0.48, 0, Math.PI*2); ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y, r*0.24, 0, Math.PI*2); ctx.fillStyle = '#e22'; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,220,50,0.7)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(x, y, r+4, 0, Math.PI*2); ctx.stroke();
+
+  // HPバー
+  if (target.hp !== undefined && target.maxHp) {
+    const barW = r * 2.4;
+    const barH = 7;
+    const barX = x - barW / 2;
+    const barY = y + r + 6;
+    const pct = Math.max(0, target.hp / target.maxHp);
+    ctx.fillStyle = '#222';
+    ctx.fillRect(barX, barY, barW, barH);
+    ctx.fillStyle = pct > 0.5 ? '#4caf50' : pct > 0.25 ? '#ff9800' : '#e22';
+    ctx.fillRect(barX, barY, barW * pct, barH);
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(barX, barY, barW, barH);
+    // HP数値
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(`${Math.max(0, Math.round(target.hp))}/${target.maxHp}`, x, barY + 9);
+  }
+}
+
+function drawHpCross(c) {
+  if (c.hp <= 0) return;
+  ctx.save(); // ← 全体をsave/restoreで囲んで色漏れを防ぐ
+  const S = c.r * 1.3;
+  const s = S / 3;
+  const margin = 4;
+  let cx = c.x;
+  let cy = c.y - c.r - 6 - S / 2;
+  // 上端でクロスが切れてしまわないように、はみ出す分だけキャラの下側（体に重ねる形）へ逃がす
+  if (cy - S / 2 < margin) cy = margin + S / 2;
+  // 左右端でも切れないようにクランプ
+  if (cx - S / 2 < margin) cx = margin + S / 2;
+  if (cx + S / 2 > W - margin) cx = W - margin - S / 2;
+  const left = cx - S / 2, top = cy - S / 2;
+
+  function crossPath() {
+    ctx.beginPath();
+    ctx.moveTo(left + s,   top);
+    ctx.lineTo(left + 2*s, top);
+    ctx.lineTo(left + 2*s, top + s);
+    ctx.lineTo(left + 3*s, top + s);
+    ctx.lineTo(left + 3*s, top + 2*s);
+    ctx.lineTo(left + 2*s, top + 2*s);
+    ctx.lineTo(left + 2*s, top + 3*s);
+    ctx.lineTo(left + s,   top + 3*s);
+    ctx.lineTo(left + s,   top + 2*s);
+    ctx.lineTo(left,       top + 2*s);
+    ctx.lineTo(left,       top + s);
+    ctx.lineTo(left + s,   top + s);
+    ctx.closePath();
+  }
+
+  const pct = Math.max(0, Math.min(1, c.hp / c.maxHp));
+  const critical = pct <= 0.3;
+
+  ctx.save();
+  crossPath();
+  ctx.clip();
+  ctx.fillStyle = critical ? '#e23a3a' : '#ffffff';
+  ctx.fillRect(left, top, S, S);
+  const lostH = S * (1 - pct);
+  if (lostH > 0.5) {
+    ctx.fillStyle = '#2b2b2b';
+    ctx.fillRect(left, top, S, lostH);
+  }
+  ctx.restore();
+
+  crossPath();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#000';
+  ctx.stroke();
+
+  const hpText = Math.max(0, Math.round(c.hp));
+  ctx.font = '800 20px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 4; ctx.strokeStyle = '#000';
+  ctx.strokeText(hpText, cx, cy);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(hpText, cx, cy);
+
+  ctx.restore(); // ← 全体のrestore
+}
+
+function drawChar(c, enemy) {
+  const dead = c.hp <= 0;
+  if (dead && c.type === 'timetraveler') return; // TTGは死んだら消す
+  if (dead) ctx.globalAlpha = 0.25;
+  // トレイル
+  for (let i = 0; i < c.trail.length; i++) {
+    const a = (i / c.trail.length) * 0.3;
+    if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong') {
+      ctx.fillStyle = c.color + Math.round(a * 255).toString(16).padStart(2, '0');
+      ctx.fill();
+    }
+  }
+  // 本体（ボクシング・ダーツガイ・タイムトラベラーガイ・ピンポンガイは画像を使うので円は描かない）
+  if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong') {
+    ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+    ctx.fillStyle = c.hitTimer > 0 ? c.lightColor : c.color;
+    ctx.fill();
+    if (c.hitTimer > 0) { ctx.strokeStyle = '#FAC775'; ctx.lineWidth = 3; ctx.stroke(); }
+  }
+  // Tennis Guyのラケット描画
+  if (c.type === 'tennis' && !dead) {
+    // スイングアニメーション：swingTimerが残っている間は弧を描く
+    if (c.swingTimer > 0) c.swingTimer--;
+    let ang = c.racketAngle || 0;
+    if (c.swingTimer > 0) {
+      const t = 1 - c.swingTimer / 18; // 0→1
+      const swing = Math.sin(t * Math.PI) * 1.4; // 最大±80度
+      ang = c.swingBaseAngle + swing;
+    }
+    const armLen = c.r + 20;
+    const ax = c.x + Math.cos(ang) * armLen;
+    const ay = c.y + Math.sin(ang) * armLen;
+    const rax = ax + Math.cos(ang) * 16;
+    const ray = ay + Math.sin(ang) * 16;
+    // スイング中は軌跡を薄く表示
+    if (c.swingTimer > 0) {
+      const alpha = c.swingTimer / 18 * 0.4;
+      ctx.strokeStyle = `rgba(165,214,167,${alpha})`; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(c.x, c.y, armLen + 16, c.swingBaseAngle - 1.2, c.swingBaseAngle + 1.2); ctx.stroke();
+    }
+    // グリップ
+    ctx.strokeStyle = '#8B4513'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(c.x + Math.cos(ang) * c.r * 0.6, c.y + Math.sin(ang) * c.r * 0.6);
+    ctx.lineTo(ax, ay); ctx.stroke();
+    // ラケットフレーム
+    ctx.strokeStyle = c.swingTimer > 0 ? '#AFFFAF' : '#fff'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(rax, ray, 16, 11, ang, 0, Math.PI * 2); ctx.stroke();
+    // 網目
+    ctx.strokeStyle = 'rgba(200,255,200,0.7)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.ellipse(rax, ray, 11, 7, ang, 0, Math.PI * 2); ctx.stroke();
+  }
+  // Gunman Guyの銃描画（発砲時はマズルフラッシュ、クールダウン中は銃が煙る）
+  if (c.type === 'gunman' && !dead) {
+    if (c.gunFireTimer > 0) c.gunFireTimer--;
+    const overheating = c.overheatCooldown > 0;
+    const dir = c.aimDir || 1;
+    const gx = c.x + dir * (c.r - 6);
+    const gy = c.y;
+    ctx.save();
+    ctx.translate(gx, gy);
+    ctx.scale(dir, 1);
+    ctx.fillStyle = overheating ? '#8D8378' : '#3E2723';
+    ctx.fillRect(0, -5, 26, 10);
+    ctx.fillRect(4, 5, 8, 14);
+    ctx.strokeStyle = '#1B0F0A'; ctx.lineWidth = 1.5;
+    ctx.strokeRect(0, -5, 26, 10);
+    ctx.restore();
+    if (c.gunFireTimer > 0) {
+      const flashR = 10 * (c.gunFireTimer / 10);
+      ctx.beginPath();
+      ctx.arc(gx + dir * 30, gy, flashR, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,213,79,0.85)';
+      ctx.fill();
+    }
+    if (overheating) {
+      const t = Date.now() / 300;
+      ctx.font = '16px serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.globalAlpha = 0.6 + 0.3 * Math.sin(t);
+      ctx.fillText('💨', gx + dir * 20, gy - 14 - 4 * Math.sin(t));
+      ctx.globalAlpha = 1;
+    }
+  }
+  // 絵文字 or 画像（ボクシングガイは背景除去画像）
+  ctx.globalAlpha = dead ? 0.25 : 1;
+  if (c.type === 'boxing' && BOXER_IMG.complete && BOXER_IMG.naturalWidth > 0) {
+    // パンチ中（攻撃直後）はパンチ画像、それ以外は通常画像
+    const isPunching = c.punchAnimTimer > 0;
+    const isUppering = c.upperAnimTimer > 0;
+    const isDodging = c.dodgeAnimTimer > 0;
+    if (c.punchAnimTimer > 0) c.punchAnimTimer--;
+    if (c.upperAnimTimer > 0) c.upperAnimTimer--;
+    if (c.dodgeAnimTimer > 0) c.dodgeAnimTimer--;
+    let img = BOXER_IMG;
+    let flipY = false;
+    if (isDodging && BOXER_DODGE_IMG.complete && BOXER_DODGE_IMG.naturalWidth > 0) {
+      img = BOXER_DODGE_IMG;
+    } else if (isUppering && BOXER_UPPER_IMG.complete && BOXER_UPPER_IMG.naturalWidth > 0) {
+      img = BOXER_UPPER_IMG;
+    } else if (isPunching && BOXER_PUNCH_IMG.complete && BOXER_PUNCH_IMG.naturalWidth > 0) {
+      img = BOXER_PUNCH_IMG;
+    }
+    const imgW = img.naturalWidth;
+    const imgH = img.naturalHeight;
+    const scale = (c.r * 2.2) / Math.max(imgW, imgH);
+    const dw = imgW * scale;
+    const dh = imgH * scale;
+    // 敵が左にいる場合は左右反転（元画像は右向き）
+    const flipX = enemy && enemy.x < c.x;
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    if (flipX) ctx.scale(-1, 1);
+    if (flipY) ctx.scale(1, -1);
+    ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
+  } else if (c.type === 'darts' && dartsGuy_IMG.complete && dartsGuy_IMG.naturalWidth > 0) {
+    if (c.throwTimer > 0) c.throwTimer--;
+    const isThrow = c.throwTimer > 0;
+    const dartsImg = (isThrow && dartsGuy_throw_IMG.complete && dartsGuy_throw_IMG.naturalWidth > 0)
+      ? dartsGuy_throw_IMG : dartsGuy_IMG;
+    const imgW = dartsImg.naturalWidth;
+    const imgH = dartsImg.naturalHeight;
+    const scale = (c.r * 2.2) / Math.max(imgW, imgH);
+    const dw = imgW * scale;
+    const dh = imgH * scale;
+    // 的が右にいる場合は左右反転（元画像は左向き）
+    const flipX = target && target.x > c.x;
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    if (flipX) ctx.scale(-1, 1);
+    ctx.drawImage(dartsImg, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
+  } else if (c.type === 'timetraveler' && timetravelarGuy_IMG.complete && timetravelarGuy_IMG.naturalWidth > 0) {
+    const imgW = timetravelarGuy_IMG.naturalWidth;
+    const imgH = timetravelarGuy_IMG.naturalHeight;
+    const scale = (c.r * 2.2) / Math.max(imgW, imgH);
+    const dw = imgW * scale;
+    const dh = imgH * scale;
+    const flipX = enemy && enemy.x < c.x;
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    if (flipX) ctx.scale(-1, 1);
+    ctx.drawImage(timetravelarGuy_IMG, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
+  } else if (c.type === 'pingpong') {
+    // swingTimer カウントダウン
+    if (c.swingTimer > 0) c.swingTimer--;
+    // swingTimer > 0 のとき（打ち返し中）はshot画像、それ以外は通常画像
+    const isShot = c.swingTimer > 0;
+    const img = (isShot && pingpongGuy_shot_IMG.complete && pingpongGuy_shot_IMG.naturalWidth > 0)
+      ? pingpongGuy_shot_IMG
+      : (pingpongGuy_IMG.complete && pingpongGuy_IMG.naturalWidth > 0 ? pingpongGuy_IMG : null);
+    if (img) {
+      const imgW = img.naturalWidth;
+      const imgH = img.naturalHeight;
+      const scale = (c.r * 2.2) / Math.max(imgW, imgH);
+      const dw = imgW * scale;
+      const dh = imgH * scale;
+      const flipX = enemy && enemy.x < c.x;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      if (flipX) ctx.scale(-1, 1);
+      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+    }
+  } else if (c.type !== 'boxing' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'darts') {
+    ctx.font = '40px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(c.emoji, c.x, c.y + 2);
+  }
+  // ダメージフラッシュ（全キャラ共通：hitTimer中は体を白く塗りつぶす）
+  if (c.hitTimer > 0) {
+    const flashAlpha = Math.min(1, c.hitTimer / 5);
+    if (c.type === 'boxing' || c.type === 'darts' || c.type === 'timetraveler' || c.type === 'pingpong') {
+      // 画像ベースのキャラ：直前に描画した画像の輪郭（シルエット）に沿って白く塗る
+      if (!c._flashCanvas) {
+        c._flashCanvas = document.createElement('canvas');
+        c._flashCtx = c._flashCanvas.getContext('2d');
+      }
+      const fw = Math.ceil(c.r * 2.4), fh = Math.ceil(c.r * 2.4);
+      if (c._flashCanvas.width !== fw || c._flashCanvas.height !== fh) {
+        c._flashCanvas.width = fw; c._flashCanvas.height = fh;
+      }
+      const fctx = c._flashCtx;
+      fctx.clearRect(0, 0, fw, fh);
+      fctx.save();
+      fctx.translate(fw / 2, fh / 2);
+      // 直前の描画と同じ画像・反転状態を再現
+      let img = null, flipX = false, flipY = false;
+      if (c.type === 'boxing') {
+        img = BOXER_IMG;
+        if (c.dodgeAnimTimer > 0 && BOXER_DODGE_IMG.complete && BOXER_DODGE_IMG.naturalWidth > 0) img = BOXER_DODGE_IMG;
+        else if (c.upperAnimTimer > 0 && BOXER_UPPER_IMG.complete && BOXER_UPPER_IMG.naturalWidth > 0) img = BOXER_UPPER_IMG;
+        else if (c.punchAnimTimer > 0 && BOXER_PUNCH_IMG.complete && BOXER_PUNCH_IMG.naturalWidth > 0) img = BOXER_PUNCH_IMG;
+        flipX = enemy && enemy.x < c.x;
+      } else if (c.type === 'darts') {
+        img = (c.throwTimer > 0 && dartsGuy_throw_IMG.complete && dartsGuy_throw_IMG.naturalWidth > 0)
+          ? dartsGuy_throw_IMG : dartsGuy_IMG;
+        flipX = target && target.x > c.x;
+      } else if (c.type === 'timetraveler') {
+        img = timetravelarGuy_IMG;
+        flipX = enemy && enemy.x < c.x;
+      } else if (c.type === 'pingpong') {
+        img = (c.swingTimer > 0 && pingpongGuy_shot_IMG.complete && pingpongGuy_shot_IMG.naturalWidth > 0) ? pingpongGuy_shot_IMG : pingpongGuy_IMG;
+        flipX = enemy && enemy.x < c.x;
+      }
+      if (img && img.complete && img.naturalWidth > 0) {
+        const imgW = img.naturalWidth, imgH = img.naturalHeight;
+        const scale = (c.r * 2.2) / Math.max(imgW, imgH);
+        const dw = imgW * scale, dh = imgH * scale;
+        if (flipX) fctx.scale(-1, 1);
+        if (flipY) fctx.scale(1, -1);
+        fctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+        fctx.globalCompositeOperation = 'source-in';
+        fctx.fillStyle = '#ffffff';
+        fctx.fillRect(-fw / 2, -fh / 2, fw, fh);
+      }
+      fctx.restore();
+      ctx.save();
+      ctx.globalAlpha = flashAlpha;
+      ctx.drawImage(c._flashCanvas, c.x - fw / 2, c.y - fh / 2);
+      ctx.restore();
+    } else {
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-atop';
+      ctx.globalAlpha = flashAlpha;
+      ctx.beginPath(); ctx.arc(c.x, c.y, c.r * 1.1, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+  // 地雷ガイ：壁激突で停止中は頭上に星を回して「動けない」ことを示す
+  if (c.type === 'landmine' && !dead && c.wallStopTimer > 0) {
+    const n = 3;
+    const t = Date.now() / 200;
+    for (let i = 0; i < n; i++) {
+      const ang = t + (Math.PI * 2 / n) * i;
+      const sx = c.x + Math.cos(ang) * (c.r * 0.55);
+      const sy = c.y - c.r - 22 + Math.sin(ang) * 8;
+      ctx.font = '18px serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('⭐', sx, sy);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ============================================================
+// Twins Guy（ツインズガイ）
+// ============================================================
+function updateTwins(twinA, twinB, enemies) {
+  // 両者の HP をリンク（ダメージを受けた側に合わせる）
+  const minHp = Math.min(twinA.hp, twinB.hp);
+  if (twinA.hp !== minHp) {
+    const diff = twinA.hp - minHp;
+    twinA.hp = minHp;
+    twinA.hitTimer = Math.max(twinA.hitTimer, 8);
+    spawnParticles(twinA.x, twinA.y, '#F48FB1', 6);
+    spawnDmg(twinA.x, twinA.y - twinA.r - 10, diff, '#F48FB1');
+  }
+  if (twinB.hp !== minHp) {
+    const diff = twinB.hp - minHp;
+    twinB.hp = minHp;
+    twinB.hitTimer = Math.max(twinB.hitTimer, 8);
+    spawnParticles(twinB.x, twinB.y, '#F48FB1', 6);
+    spawnDmg(twinB.x, twinB.y - twinB.r - 10, diff, '#F48FB1');
+  }
+
+  // ソーセージ投擲
+  for (const twin of [twinA, twinB]) {
+    if (twin.hp <= 0) continue;
+    if (twin.throwTimer > 0) twin.throwTimer--;
+    if (twin.sausageCooldown > 0) { twin.sausageCooldown--; continue; }
+    // 最も近い敵に向けて投げる
+    let target = null, minDist = Infinity;
+    for (const e of enemies) {
+      if (e.hp <= 0) continue;
+      const d = Math.hypot(e.x - twin.x, e.y - twin.y);
+      if (d < minDist) { minDist = d; target = e; }
+    }
+    if (!target) continue;
+    const dx = target.x - twin.x, dy = target.y - twin.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const spd = 7;
+    sausages.push({
+      x: twin.x, y: twin.y,
+      vx: dx / d * spd, vy: dy / d * spd,
+      r: 12, owner: twin, ownerTeam: twinA, // チーム識別用
+      age: 0, maxAge: 120,
+      trail: []
+    });
+    twin.throwTimer = 20;
+    twin.sausageCooldown = 120;
+    spawnParticles(twin.x, twin.y, '#FF8F00', 5);
+  }
+}
+
+function updateSausages(p1A, p1B, p1Enemies, p2Enemies, p2A, p2B) {
+  for (let i = sausages.length - 1; i >= 0; i--) {
+    const s = sausages[i];
+    s.trail.push({ x: s.x, y: s.y });
+    if (s.trail.length > 8) s.trail.shift();
+    s.x += s.vx; s.y += s.vy;
+    s.age++;
+
+    if (s.x < 0 || s.x > W || s.y > H + 20 || s.age >= s.maxAge) {
+      sausages.splice(i, 1); continue;
+    }
+
+    // オーナーのチームを特定
+    const isP1Team = (s.owner === p1A || s.owner === p1B);
+    const enemies  = isP1Team ? p1Enemies : p2Enemies;
+    const friendA  = isP1Team ? p1A : p2A;
+    const friendB  = isP1Team ? p1B : p2B;
+
+    let hit = false;
+
+    // 敵に命中 → ダメージ
+    for (const e of enemies) {
+      if (!e || e.hp <= 0) continue;
+      if (Math.hypot(e.x - s.x, e.y - s.y) >= e.r + s.r) continue;
+      const dmg = 60;
+      e.hp = Math.max(0, e.hp - dmg);
+      e.hitTimer = 12;
+      sfxPunch();
+      spawnParticles(e.x, e.y, '#FF8F00', 14);
+      spawnParticles(e.x, e.y, '#FFCC02', 8);
+      spawnDmg(e.x, e.y - e.r - 12, dmg, '#FF8F00');
+      sausages.splice(i, 1); hit = true; break;
+    }
+    if (hit) continue;
+
+    // 味方に命中 → 回復（投げた本人以外）
+    for (const f of [friendA, friendB]) {
+      if (!f || f.hp <= 0 || f === s.owner) continue;
+      if (Math.hypot(f.x - s.x, f.y - s.y) >= f.r + s.r) continue;
+      const heal = 120;
+      const before = f.hp;
+      f.hp = Math.min(f.maxHp, f.hp + heal);
+      const actual = f.hp - before;
+      if (actual > 0) {
+        // リンク回復：もう一方にも同量回復
+        const other = (f === friendA) ? friendB : friendA;
+        if (other && other.hp > 0) {
+          other.hp = Math.min(other.maxHp, other.hp + actual);
+          spawnParticles(other.x, other.y, '#69F0AE', 8);
+          spawnDmg(other.x, other.y - other.r - 12, actual, '#69F0AE');
+        }
+        spawnParticles(f.x, f.y, '#69F0AE', 12);
+        spawnDmg(f.x, f.y - f.r - 12, actual, '#69F0AE');
+        dmgTexts.push({ x: f.x, y: f.y - f.r - 38, text: '🌭 HEAL!', life: 1.0, color: '#69F0AE' });
+      }
+      sausages.splice(i, 1); hit = true; break;
+    }
+  }
+}
+
+function drawSausage(s) {
+  const angle = Math.atan2(s.vy, s.vx);
+  // トレイル
+  for (let i = 0; i < s.trail.length; i++) {
+    const a = (i / s.trail.length) * 0.25;
+    ctx.beginPath();
+    ctx.arc(s.trail[i].x, s.trail[i].y, s.r * 0.4 * (i / s.trail.length), 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(160,82,45,${a})`;
+    ctx.fill();
+  }
+  ctx.save();
+  ctx.translate(s.x, s.y);
+  ctx.rotate(angle);
+
+  const len = s.r * 2.2;  // 長さ（半分）
+  const wid = s.r * 0.65; // 太さ（半分）
+
+  // ソーセージ本体：先端を細くとがらせたカプセル形
+  ctx.beginPath();
+  // 右先端（やや尖る）
+  ctx.moveTo(len, 0);
+  ctx.bezierCurveTo(len * 0.85, wid * 0.6,  len * 0.5, wid, 0, wid);
+  ctx.bezierCurveTo(-len * 0.5, wid, -len * 0.85, wid * 0.6, -len, 0);
+  ctx.bezierCurveTo(-len * 0.85, -wid * 0.6, -len * 0.5, -wid, 0, -wid);
+  ctx.bezierCurveTo(len * 0.5, -wid, len * 0.85, -wid * 0.6, len, 0);
+  ctx.closePath();
+
+  // グラデーション（焼き色）
+  const grad = ctx.createLinearGradient(0, -wid, 0, wid);
+  grad.addColorStop(0, '#C8733A');
+  grad.addColorStop(0.35, '#A0522D');
+  grad.addColorStop(0.7, '#7B3B1E');
+  grad.addColorStop(1, '#5C2A10');
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.strokeStyle = '#4A1F0A'; ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // 表面のテクスチャ線（縦しわ）
+  ctx.strokeStyle = 'rgba(80,35,10,0.4)'; ctx.lineWidth = 1;
+  for (const ox of [-len * 0.45, 0, len * 0.45]) {
+    const hw = wid * Math.sqrt(Math.max(0, 1 - (ox / len) ** 2)) * 0.9;
+    ctx.beginPath();
+    ctx.moveTo(ox, -hw);
+    ctx.lineTo(ox, hw);
+    ctx.stroke();
+  }
+
+  // ハイライト
+  ctx.beginPath();
+  ctx.ellipse(-len * 0.1, -wid * 0.3, len * 0.5, wid * 0.2, 0, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,220,180,0.35)';
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawTwinsChar(c, enemy) {
+  if (c.hp <= 0) { ctx.globalAlpha = 0.25; }
+  // トレイル
+  for (let i = 0; i < c.trail.length; i++) {
+    const a = (i / c.trail.length) * 0.25;
+    ctx.beginPath(); ctx.arc(c.trail[i].x, c.trail[i].y, c.r * (i / c.trail.length), 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(233,30,99,${a})`; ctx.fill();
+  }
+  // 本体円
+  ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+  ctx.fillStyle = c.hitTimer > 0 ? c.lightColor : c.color;
+  ctx.fill();
+  ctx.strokeStyle = '#880E4F'; ctx.lineWidth = 3; ctx.stroke();
+  // 絵文字
+  ctx.globalAlpha = c.hp <= 0 ? 0.25 : 1;
+  ctx.font = '34px serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(c.emoji, c.x, c.y + 2);
+  // A/Bラベル
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillStyle = '#fff';
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 3;
+  ctx.strokeText(c.twinId, c.x, c.y + c.r - 10);
+  ctx.fillText(c.twinId, c.x, c.y + c.r - 10);
+  // ダメージフラッシュ
+  if (c.hitTimer > 0) {
+    const flashAlpha = Math.min(1, c.hitTimer / 5);
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-atop';
+    ctx.globalAlpha = flashAlpha;
+    ctx.beginPath(); ctx.arc(c.x, c.y, c.r * 1.1, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff'; ctx.fill();
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawDart(d) {
+  ctx.save();
+  ctx.translate(d.x, d.y);
+  ctx.rotate(Math.atan2(d.vy, d.vx));
+  if (d.stuck) ctx.globalAlpha = 0.6;
+  ctx.fillStyle = '#aaa8a0';
+  ctx.beginPath();
+  ctx.moveTo(18, 0); ctx.lineTo(-9, -4.5); ctx.lineTo(-6, 0); ctx.lineTo(-9, 4.5);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#D85A30';
+  ctx.beginPath(); ctx.moveTo(20, 0); ctx.lineTo(15, -4.0); ctx.lineTo(12, 3.75); ctx.closePath(); ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function draw() {
+  // キャンバスは物理的に大きいが、ゲームロジックはW×H(500×500)の論理座標のまま。
+  // ここで拡大変換をかけることで、キャラ・フィールドの比率を変えずに画面全体を大きく表示する
+  ctx.setTransform(GAME_SCALE, 0, 0, GAME_SCALE, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#1FA5CB'; ctx.fillRect(0, 0, W, H);
+  if (!p1char || !p2char) return;
+  for (const p of particles) {
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
+    ctx.fillStyle = p.color + Math.round(p.life * 160).toString(16).padStart(2, '0');
+    ctx.fill();
+  }
+  if (target) drawTarget();
+  for (const d of darts) drawDart(d);
+  for (const b of pingBalls) drawPingBall(b);
+  for (const a of airBullets) drawAirBullet(a);
+  for (const s of sausages) drawSausage(s);
+  for (const m of landmines) drawLandmine(m);
+  for (const b of bullets) drawBullet(b);
+  drawChar(p1char, p2char);
+  drawChar(p2char, p1char);
+  // ツインズBを描画
+  if (p1twinB) drawTwinsChar(p1twinB, p2char);
+  if (p2twinB) drawTwinsChar(p2twinB, p1char);
+  drawTTGFuture();
+  if (ttgFuture2) drawTTGFutureObj(ttgFuture2);
+  for (const e of timeTravelEffects) drawTimeTravelEffect(e);
+  drawBomb();
+  for (const t of dmgTexts) {
+    ctx.font = '500 30px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillStyle = t.color + Math.round(t.life * 255).toString(16).padStart(2, '0');
+    ctx.fillText(t.text, t.x, t.y);
+  }
+  // HPバー（クロス型）はどのオブジェクトよりも手前に表示する
+  const hpBarChars = [p1char, p2char, p1twinB, p2twinB, ttgFuture, ttgFuture2].filter(c => c && c.hp > 0);
+  for (const c of hpBarChars) drawHpCross(c);
+}
+
+// ============================================================
+// 勝敗判定
+// ============================================================
+function checkWin() {
+  const p1isTTG = p1char.type === 'timetraveler';
+  const p2isTTG = p2char.type === 'timetraveler';
+
+  let p1alive, p2alive;
+  if (p1isTTG) {
+    p1alive = p1char.hp > 0 || (ttgFuture && ttgFuture.owner === p1char && ttgFuture.hp > 0);
+  } else {
+    // ツインズはHPリンクなので p1char.hp > 0 だけ見ればよい
+    p1alive = p1char.hp > 0;
+  }
+  if (p2isTTG) {
+    p2alive = p2char.hp > 0 || (ttgFuture && ttgFuture.owner === p2char && ttgFuture.hp > 0)
+                              || (ttgFuture2 && ttgFuture2.owner === p2char && ttgFuture2.hp > 0);
+  } else {
+    p2alive = p2char.hp > 0;
+  }
+
+  if (p1alive && p2alive) return;
+  if (over) return;
+  over = true;
+
+  const p1wins = p1alive && !p2alive;
+
+  // 勝者を決定
+  let winner;
+  if (p1wins) {
+    // p1側で生きているキャラを探す
+    if (p1isTTG && ttgFuture && ttgFuture.owner === p1char && ttgFuture.hp > 0) winner = ttgFuture;
+    else winner = p1char;
+  } else {
+    // p2側で生きているキャラを探す
+    if (p2isTTG) {
+      if (ttgFuture2 && ttgFuture2.owner === p2char && ttgFuture2.hp > 0) winner = ttgFuture2;
+      else if (ttgFuture && ttgFuture.owner === p2char && ttgFuture.hp > 0) winner = ttgFuture;
+      else winner = p2char;
+    } else {
+      winner = p2char;
+    }
+  }
+
+  if (p1wins) sc1++; else sc2++;
+  document.getElementById('sc1').textContent = sc1;
+  document.getElementById('sc2').textContent = sc2;
+  const winText = `${winner.emoji} ${winner.name} の勝ち！`;
+  document.getElementById('msg').textContent = winText;
+  document.getElementById('btn-toggle').textContent = '↺ もう一度';
+  spawnParticles(winner.x, winner.y, '#FAC775', 30);
+  sfxWin();
+
+  // 勝者キャラをグローバルに保持してリザルトループで使う
+  resultWinner = winner;
+
+  // running は止めず、リザルト専用ループに切り替える
+  running = false;
+  animId = requestAnimationFrame(resultLoop);
+}
+
+// ============================================================
+// リザルトループ（勝者だけ動き続ける）
+// ============================================================
+function resultLoop() {
+  if (!over) return;
+
+  // 勝者キャラだけ移動させる
+  if (resultWinner) {
+    moveChar(resultWinner);
+    // パーティクル更新
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx; p.y += p.vy; p.vy += 0.1; p.life -= 0.035;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+    // ダメージテキスト更新
+    for (let i = dmgTexts.length - 1; i >= 0; i--) {
+      dmgTexts[i].y -= 0.8; dmgTexts[i].life -= 0.025;
+      if (dmgTexts[i].life <= 0) dmgTexts.splice(i, 1);
+    }
+  }
+
+  // 通常描画（キャラ・エフェクト含む）
+  draw();
+
+  // 結果オーバーレイを重ねて描く
+  const winText = `${resultWinner.emoji} ${resultWinner.name} の勝ち！`;
+  ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#FAC775'; ctx.font = 'bold 26px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(winText, W / 2, H / 2 - 16);
+  ctx.fillStyle = '#ddd'; ctx.font = '15px sans-serif';
+  ctx.fillText('もう一度 を押してリマッチ', W / 2, H / 2 + 18);
+
+  animId = requestAnimationFrame(resultLoop);
+}
+
+// ============================================================
+// メインループ
+// ============================================================
+function loop() {
+  if (!running) return;
+  moveChar(p1char);
+  moveChar(p2char);
+  // 両者ともヒットストップ中のときのみ押し戻しをスキップ（片方だけなら通す）
+  if (!(p1char.hitstop > 0 && p2char.hitstop > 0)) resolveCollision(p1char, p2char);
+  if (target) moveTarget();
+
+  // 各キャラの攻撃
+  if (p1char.type === 'boxing') updateBoxing(p1char, p2char);
+  if (p2char.type === 'boxing') updateBoxing(p2char, p1char);
+  if (p1char.type === 'darts') { updateDarts_shoot(p1char); updateDarts_burst(p1char); }
+  if (p2char.type === 'darts') { updateDarts_shoot(p2char); updateDarts_burst(p2char); }
+  updateDartProjectiles();
+  if (p1char.type === 'tennis') updateTennis(p1char, p2char);
+  if (p2char.type === 'tennis') updateTennis(p2char, p1char);
+  if (p1char.type === 'pingpong') updatePingpong(p1char, p2char);
+  if (p2char.type === 'pingpong') updatePingpong(p2char, p1char);
+  updatePingBalls();
+  updateLandmines();
+  if (p1char.type === 'gunman') updateGunman(p1char, p2char);
+  if (p2char.type === 'gunman') updateGunman(p2char, p1char);
+  updateBullets();
+
+  // ツインズガイ処理
+  if (p1char.type === 'twins' && p1twinB) {
+    moveChar(p1twinB);
+    resolveCollision(p1char, p1twinB);
+    const enemies = [p2char, p2twinB].filter(Boolean);
+    updateTwins(p1char, p1twinB, enemies);
+    // ボクサー/テニス/ガンマンが双子Bも狙えるように
+    if (p2char.type === 'boxing') updateBoxing(p2char, p1twinB);
+    if (p2char.type === 'tennis') updateTennis(p2char, p1twinB);
+    if (p2char.type === 'gunman') updateGunman(p2char, p1twinB);
+    resolveCollision(p2char, p1twinB);
+    // p2twinB も p1twinB を攻撃できるように
+    if (p2twinB && p2twinB.hp > 0) resolveCollision(p2twinB, p1twinB);
+  }
+  if (p2char.type === 'twins' && p2twinB) {
+    moveChar(p2twinB);
+    resolveCollision(p2char, p2twinB);
+    const enemies = [p1char, p1twinB].filter(Boolean);
+    updateTwins(p2char, p2twinB, enemies);
+    if (p1char.type === 'boxing') updateBoxing(p1char, p2twinB);
+    if (p1char.type === 'tennis') updateTennis(p1char, p2twinB);
+    if (p1char.type === 'gunman') updateGunman(p1char, p2twinB);
+    resolveCollision(p1char, p2twinB);
+    // p1twinB と p2twinB の衝突（双子同士）
+    if (p1twinB) resolveCollision(p1twinB, p2twinB);
+  }
+  // ソーセージ更新
+  if (sausages.length > 0) {
+    const p1friendA = p1char.type === 'twins' ? p1char : null;
+    const p1friendB = p1char.type === 'twins' ? p1twinB : null;
+    const p2friendA = p2char.type === 'twins' ? p2char : null;
+    const p2friendB = p2char.type === 'twins' ? p2twinB : null;
+    const p1enemies = [p2char, p2twinB].filter(e => e && e.hp > 0);
+    const p2enemies = [p1char, p1twinB].filter(e => e && e.hp > 0);
+    updateSausages(p1friendA, p1friendB, p1enemies, p2enemies, p2friendA, p2friendB);
+  }
+
+  // ============================================================
+  // タイムトラベラーガイ処理（TTG vs TTG 対応）
+  // ============================================================
+  // TTGキャラを配列で管理（0人・1人・2人に対応）
+  const ttgChars = [p1char, p2char].filter(c => c.type === 'timetraveler');
+  const nonTtgChars = [p1char, p2char].filter(c => c.type !== 'timetraveler');
+
+  // TTG vs TTG の場合、それぞれが相手を敵とする
+  // そうでない場合は従来どおり
+  function getTtgEnemy(ttg) {
+    if (ttgChars.length === 2) {
+      return ttg === p1char ? p2char : p1char;
+    }
+    return ttg === p1char ? p2char : p1char;
+  }
+
+  // TTG vs TTGのとき、p1 の未来は ttgFuture、p2 の未来は ttgFuture2 に入れる
+  // （TTGが1人のときは従来どおり ttgFuture のみ使用）
+  // ※ 両TTGの未来がそれぞれ相手を攻撃する
+
+  for (const ttg of ttgChars) {
+    if (ttg.hp <= 0) continue;
+    const ttgEnemy = getTtgEnemy(ttg);
+    // 自分の未来変数を決定（p1→ttgFuture、p2→ttgFuture2）
+    const futureKey = (ttg === p1char) ? 'ttgFuture' : 'ttgFuture2';
+
+    // 未来の自分がまだ出現していない場合、60フレーム後に出現（一度きり）
+    const myFuture = (futureKey === 'ttgFuture') ? ttgFuture : ttgFuture2;
+    if (!myFuture && ttg.timeLoopX !== null && !ttg.futureSpawned) {
+      if (!ttg.futureSpawnTimer) ttg.futureSpawnTimer = 60;
+      ttg.futureSpawnTimer--;
+      if (ttg.futureSpawnTimer <= 0) {
+        const newFuture = spawnTTGFutureObj(ttg, ttgEnemy, ttg.timeLoopX);
+        if (futureKey === 'ttgFuture') ttgFuture = newFuture;
+        else ttgFuture2 = newFuture;
+        ttg.futureSpawned = true;
+      }
+    }
+    // 現在のTTGも空気砲で攻撃
+    if (!ttg.airCooldown) ttg.airCooldown = 0;
+    if (ttg.airCooldown > 0) ttg.airCooldown--;
+    else {
+      // 敵の双子Bが生きていればランダムでどちらかを狙う
+      const enemyTwinB = (ttgEnemy === p2char) ? p2twinB : (ttgEnemy === p1char ? p1twinB : null);
+      const airTarget = (enemyTwinB && enemyTwinB.hp > 0 && Math.random() < 0.5) ? enemyTwinB : ttgEnemy;
+      if (airTarget && airTarget.hp > 0) {
+        fireAirCannon(ttg, airTarget);
+        ttg.airCooldown = 120;
+      }
+    }
+    // タイムトラベルチェック：HPが閾値以下になったら過去へ消える
+    if (ttg.timeLoopX !== null && ttg.hp <= ttg.timeLoopX) {
+      spawnParticles(ttg.x, ttg.y, '#00E5FF', 40);
+      spawnParticles(ttg.x, ttg.y, '#ffffff', 20);
+      sfxTimeTravel();
+      spawnTimeTravelEffect(ttg.x, ttg.y);
+      ttg.hp = 0;
+      ttg.timeLoopX = null;
+    }
+  }
+
+  // 敵がttgFutureにも攻撃できる
+  // ttgFuture の owner は p1char → 敵は p2char
+  // ttgFuture2 の owner は p2char → 敵は p1char（TTG vs TTG のときのみ存在）
+  const futurePairs = [];
+  if (ttgFuture && ttgFuture.hp > 0) {
+    const futEnemy = ttgFuture.owner === p1char ? p2char : p1char;
+    futurePairs.push([ttgFuture, futEnemy]);
+  }
+  if (ttgFuture2 && ttgFuture2.hp > 0) {
+    const futEnemy2 = ttgFuture2.owner === p1char ? p2char : p1char;
+    futurePairs.push([ttgFuture2, futEnemy2]);
+  }
+  for (const [futureObj, futEnemy] of futurePairs) {
+    if (futEnemy.type === 'boxing') updateBoxing(futEnemy, futureObj);
+    if (futEnemy.type === 'tennis') updateTennis(futEnemy, futureObj);
+    if (futEnemy.hitstop <= 0 && futureObj.hitstop <= 0) resolveCollision(futEnemy, futureObj);
+    // ツインズの双子Bとも衝突処理（重なり防止）
+    const futEnemyTwinB = (futEnemy === p1char) ? p1twinB : (futEnemy === p2char ? p2twinB : null);
+    if (futEnemyTwinB && futEnemyTwinB.hp > 0 && futureObj.hitstop <= 0) {
+      resolveCollision(futEnemyTwinB, futureObj);
+    }
+  }
+
+  // TTG本体 ↔ 敵ツインズBの衝突（重なり防止）
+  for (const ttg of ttgChars) {
+    if (ttg.hp <= 0) continue;
+    const oppTwinB = (ttg === p1char) ? p2twinB : p1twinB;
+    if (oppTwinB && oppTwinB.hp > 0) resolveCollision(ttg, oppTwinB);
+  }
+
+  // 未来のTTG処理（ttgFuture）
+  if (ttgFuture && ttgFuture.hp > 0) {
+    const ttgOwner = ttgFuture.owner;
+    // TTG vs TTG のとき、相手チームの未来が生きていればそちらを優先して狙う
+    const baseEnemy = ttgOwner === p1char ? p2char : p1char;
+    const futureEnemy = ttgOwner === p1char ? ttgFuture2 : null; // p1の未来 → p2の未来を狙う
+    const ttgEnemyOfFuture = (futureEnemy && futureEnemy.hp > 0) ? futureEnemy : baseEnemy;
+    updateTTGFuture(ttgOwner && ttgOwner.hp > 0 ? ttgOwner : null, ttgEnemyOfFuture);
+  } else if (ttgFuture && ttgFuture.hp <= 0) {
+    ttgFuture = null;
+  }
+  // 未来のTTG処理（ttgFuture2：TTG vs TTGのとき）
+  if (ttgFuture2 && ttgFuture2.hp > 0) {
+    const ttgOwner2 = ttgFuture2.owner;
+    const baseEnemy2 = ttgOwner2 === p1char ? p2char : p1char;
+    const futureEnemy2 = ttgOwner2 === p2char ? ttgFuture : null; // p2の未来 → p1の未来を狙う
+    const ttgEnemyOfFuture2 = (futureEnemy2 && futureEnemy2.hp > 0) ? futureEnemy2 : baseEnemy2;
+    updateTTGFuture2(ttgOwner2 && ttgOwner2.hp > 0 ? ttgOwner2 : null, ttgEnemyOfFuture2);
+  } else if (ttgFuture2 && ttgFuture2.hp <= 0) {
+    ttgFuture2 = null;
+  }
+
+  // 空気砲処理（owner ベースで標的を決定）
+  if (ttgChars.length > 0) {
+    const ttgEnemy1 = ttgChars[0] === p1char ? p2char : p1char;
+    updateAirBullets(ttgEnemy1);
+  }
+
+  // 爆弾ガイ処理（保持者の受け渡し・タイマー・爆発判定）
+  updateBomb();
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.1; p.life -= 0.035;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+  for (let i = dmgTexts.length - 1; i >= 0; i--) {
+    dmgTexts[i].y -= 0.8; dmgTexts[i].life -= 0.025;
+    if (dmgTexts[i].life <= 0) dmgTexts.splice(i, 1);
+  }
+  for (let i = timeTravelEffects.length - 1; i >= 0; i--) {
+    timeTravelEffects[i].life -= 0.0055; // 約3秒で消える
+    if (timeTravelEffects[i].life <= 0) timeTravelEffects.splice(i, 1);
+  }
+
+  draw();
+  checkWin();
+  if (running) animId = requestAnimationFrame(loop);
+}
+
+// ============================================================
+// 初期化
+// ============================================================
+
+// Boxing Guy 画像（背景除去済みPNG）
+const BOXER_IMG = new Image();
+BOXER_IMG.src = "boxer.png"
+const BOXER_PUNCH_IMG = new Image();
+BOXER_PUNCH_IMG.src = "boxer_punchi.png"
+const BOXER_UPPER_IMG = new Image();
+BOXER_UPPER_IMG.src = "boxer_upper.png"
+const BOXER_DODGE_IMG = new Image();
+BOXER_DODGE_IMG.src = "boxer_dodge.png"
+const dartsGuy_IMG = new Image();
+dartsGuy_IMG.src = "dartsGuy.png"
+const dartsGuy_throw_IMG = new Image();
+dartsGuy_throw_IMG.src = "Darts_throw.png"
+const timetravelarGuy_IMG = new Image();
+timetravelarGuy_IMG.src = "timetravelarGuy.png"
+const timetravel_IMG = new Image();
+timetravel_IMG.src = "timetravel.png"
+const pingpongGuy_IMG = new Image();
+pingpongGuy_IMG.src = "pingpongGuy.png"
+const pingpongGuy_shot_IMG = new Image();
+pingpongGuy_shot_IMG.src = "pingpongGuy_shot.png"
+buildCharSelect();
+</script>
+</body>
+</html>
