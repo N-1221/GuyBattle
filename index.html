@@ -1796,17 +1796,35 @@ function runTimeLoopSimulation(id1, id2) {
       ballFired: false, ballCooldown: 0,
       // TTG
       airCooldown: Math.floor(Math.random() * 60),
+      // Landmine
+      wallStopTimer: 0,
+      // Gunman
+      gunCooldown: 0, overheatCooldown: 0, aimDir: 1,
+      // Twins
+      sausageCooldown: 0, throwTimer: 0,
     };
   }
 
   // シミュレーション用物理演算
-  function simMove(c) {
+  function simMove(c, simLandmines) {
     if (c.hitstop > 0) { c.hitstop--; return; }
+    // 地雷ガイ：壁に激突した直後は数秒間その場から動けない
+    if (c.type === 'landmine' && c.wallStopTimer > 0) {
+      c.wallStopTimer--;
+      if (c.hitTimer > 0) c.hitTimer--;
+      return;
+    }
     c.x += c.vx; c.y += c.vy;
-    if (c.x - c.r < 0)  { c.x = c.r;         c.vx =  Math.abs(c.vx); }
-    if (c.x + c.r > SIM_W) { c.x = SIM_W-c.r; c.vx = -Math.abs(c.vx); }
-    if (c.y - c.r < 0)  { c.y = c.r;         c.vy =  Math.abs(c.vy); }
-    if (c.y + c.r > SIM_H) { c.y = SIM_H-c.r; c.vy = -Math.abs(c.vy); }
+    let hitWall = false, wallSide = null;
+    if (c.x - c.r < 0)  { c.x = c.r;         c.vx =  Math.abs(c.vx); hitWall = true; wallSide = 'left'; }
+    if (c.x + c.r > SIM_W) { c.x = SIM_W-c.r; c.vx = -Math.abs(c.vx); hitWall = true; wallSide = 'right'; }
+    if (c.y - c.r < 0)  { c.y = c.r;         c.vy =  Math.abs(c.vy); hitWall = true; wallSide = 'top'; }
+    if (c.y + c.r > SIM_H) { c.y = SIM_H-c.r; c.vy = -Math.abs(c.vy); hitWall = true; wallSide = 'bottom'; }
+    // 地雷ガイ：壁に触れたらその場で停止し、壁際に地雷を設置
+    if (c.type === 'landmine' && hitWall && c.hp > 0 && simLandmines) {
+      c.wallStopTimer = LANDMINE_STOP_TIME;
+      simPlantLandmine(c, wallSide, simLandmines);
+    }
     if (c.hitTimer > 0) c.hitTimer--;
     if (c.knockback > 0) {
       c.knockback--;
@@ -1985,6 +2003,169 @@ function runTimeLoopSimulation(id1, id2) {
     }
   }
 
+  // Landmineシミュレーション（壁激突→設置→接触で爆発）
+  function simPlantLandmine(owner, wallSide, simLandmines) {
+    const mineR = 20;
+    let mx = owner.x, my = owner.y;
+    if (wallSide === 'left')   mx = mineR;
+    if (wallSide === 'right')  mx = SIM_W - mineR;
+    if (wallSide === 'top')    my = mineR;
+    if (wallSide === 'bottom') my = SIM_H - mineR;
+    simLandmines.push({ x: mx, y: my, r: mineR, owner, armTimer: 18 });
+  }
+  function simUpdateLandmines(simLandmines, ttg, enemy) {
+    if (simLandmines.length === 0) return;
+    const chars = [ttg, enemy];
+    for (let i = simLandmines.length - 1; i >= 0; i--) {
+      const m = simLandmines[i];
+      if (m.armTimer > 0) { m.armTimer--; continue; }
+      let exploded = false;
+      for (const c of chars) {
+        if (c === m.owner || c.hp <= 0) continue;
+        const d = Math.hypot(c.x - m.x, c.y - m.y);
+        if (d < c.r + m.r) {
+          const dmg = 180;
+          c.hp = Math.max(0, c.hp - dmg);
+          c.hitTimer = 22;
+          const dx = c.x - m.x, dy = c.y - m.y;
+          const dd = Math.hypot(dx, dy) || 1;
+          c.vx = (dx/dd)*18; c.vy = (dy/dd)*18 - 8;
+          c.knockback = 35;
+          exploded = true;
+          break;
+        }
+      }
+      if (exploded) simLandmines.splice(i, 1);
+    }
+  }
+
+  // Gunmanシミュレーション（横並びで発砲→弾が命中でダメージ）
+  const SIM_GUNMAN_BURST_MAX = 4;
+  const SIM_GUNMAN_OVERHEAT_TIME = 360;
+  function simGunman(attacker, defender, simBullets) {
+    if (attacker.hp <= 0 || defender.hp <= 0) return;
+    if (attacker.overheatCooldown > 0) { attacker.overheatCooldown--; return; }
+    if (attacker.gunCooldown > 0) { attacker.gunCooldown--; return; }
+    if (attacker.burstCount > 0) {
+      simFireBullet(attacker, attacker.aimDir || 1, simBullets);
+    } else {
+      const dx = defender.x - attacker.x, dy = defender.y - attacker.y;
+      if (dx === 0) return;
+      const alignThreshold = (attacker.r + defender.r) * 0.3;
+      if (Math.abs(dy) > alignThreshold) return;
+      simFireBullet(attacker, dx > 0 ? 1 : -1, simBullets);
+    }
+    attacker.burstCount = (attacker.burstCount || 0) + 1;
+    if (attacker.burstCount >= SIM_GUNMAN_BURST_MAX) {
+      attacker.burstCount = 0;
+      attacker.overheatCooldown = SIM_GUNMAN_OVERHEAT_TIME;
+    } else {
+      attacker.gunCooldown = 4;
+    }
+  }
+  function simFireBullet(owner, dir, simBullets) {
+    const spd = 14;
+    simBullets.push({ x: owner.x + dir*(owner.r+10), y: owner.y, vx: spd*dir, vy: 0, r: 6, owner });
+    owner.aimDir = dir;
+  }
+  function simUpdateBullets(simBullets, ttg, enemy) {
+    if (simBullets.length === 0) return;
+    const chars = [ttg, enemy];
+    for (let i = simBullets.length - 1; i >= 0; i--) {
+      const b = simBullets[i];
+      b.x += b.vx; b.y += b.vy;
+      if (b.x < -20 || b.x > SIM_W + 20) { simBullets.splice(i, 1); continue; }
+      let hit = false;
+      for (const c of chars) {
+        if (c === b.owner || c.hp <= 0) continue;
+        if (Math.hypot(c.x - b.x, c.y - b.y) >= c.r + b.r) continue;
+        c.hp = Math.max(0, c.hp - 60);
+        c.hitTimer = 12;
+        hit = true;
+        break;
+      }
+      if (hit) simBullets.splice(i, 1);
+    }
+  }
+
+  // Bombシミュレーション（接触で受け渡し、タイマー0で保持者に大ダメージ）
+  const SIM_BOMB_TIME_LIMIT = 20 * 60;
+  const SIM_BOMB_PASS_COOLDOWN = 20;
+  function simUpdateBomb(bomb, ttg, enemy) {
+    if (!bomb || bomb.exploded) return;
+    if (bomb.passCooldown > 0) bomb.passCooldown--;
+    const holder = bomb.holder;
+    if (!holder || holder.hp <= 0) { bomb.exploded = true; return; }
+    if (bomb.passCooldown <= 0) {
+      const other = (holder === ttg) ? enemy : ttg;
+      if (other.hp > 0) {
+        const d = Math.hypot(other.x - holder.x, other.y - holder.y);
+        if (d < holder.r + other.r + 6) {
+          if (!bomb.started) bomb.started = true;
+          bomb.holder = other;
+          bomb.passCooldown = SIM_BOMB_PASS_COOLDOWN;
+        }
+      }
+    }
+    if (!bomb.started) return;
+    bomb.timer--;
+    if (bomb.timer <= 0) {
+      const h = bomb.holder;
+      bomb.exploded = true;
+      h.hp = Math.max(0, h.hp - 1000);
+      h.hitTimer = 24;
+    }
+  }
+
+  // Twinsシミュレーション（ソーセージで攻撃/回復、HPはA・Bでリンク）
+  function simTwinsLinkHp(twinA, twinB) {
+    const minHp = Math.min(twinA.hp, twinB.hp);
+    twinA.hp = minHp; twinB.hp = minHp;
+  }
+  function simTwinsThrow(twin, enemyTargets, simSausages) {
+    if (twin.hp <= 0) return;
+    if (twin.throwTimer > 0) twin.throwTimer--;
+    if (twin.sausageCooldown > 0) { twin.sausageCooldown--; return; }
+    let target = null, minDist = Infinity;
+    for (const e of enemyTargets) {
+      if (e.hp <= 0) continue;
+      const d = Math.hypot(e.x - twin.x, e.y - twin.y);
+      if (d < minDist) { minDist = d; target = e; }
+    }
+    if (!target) return;
+    const dx = target.x - twin.x, dy = target.y - twin.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const spd = 7;
+    simSausages.push({ x: twin.x, y: twin.y, vx: dx/d*spd, vy: dy/d*spd, r: 12, owner: twin, age: 0, maxAge: 120 });
+    twin.throwTimer = 20;
+    twin.sausageCooldown = 120;
+  }
+  function simUpdateSausages(simSausages, twinA, twinB, enemyTargets) {
+    for (let i = simSausages.length - 1; i >= 0; i--) {
+      const s = simSausages[i];
+      s.x += s.vx; s.y += s.vy; s.age++;
+      if (s.x < 0 || s.x > SIM_W || s.y > SIM_H + 20 || s.age >= s.maxAge) { simSausages.splice(i,1); continue; }
+      let hit = false;
+      // 敵に命中→ダメージ
+      for (const e of enemyTargets) {
+        if (e.hp <= 0) continue;
+        if (Math.hypot(e.x-s.x, e.y-s.y) >= e.r+s.r) continue;
+        e.hp = Math.max(0, e.hp - 60);
+        e.hitTimer = 12;
+        simSausages.splice(i,1); hit = true; break;
+      }
+      if (hit) continue;
+      // 味方（もう一方の双子）に命中→回復（リンクなので両方に反映）
+      const friend = (s.owner === twinA) ? twinB : twinA;
+      if (friend && friend.hp > 0 && friend !== s.owner && Math.hypot(friend.x-s.x, friend.y-s.y) < friend.r+s.r) {
+        const heal = 120;
+        const healed = Math.min(twinA.maxHp, twinA.hp + heal);
+        twinA.hp = healed; twinB.hp = healed;
+        simSausages.splice(i,1);
+      }
+    }
+  }
+
   // 空気砲シミュレーション
   function simFireAir(shooter, enemy, simAirBullets) {
     if (enemy.hp <= 0) return;
@@ -2037,13 +2218,28 @@ function runTimeLoopSimulation(id1, id2) {
     const simDarts = [];
     const simPingBalls = [];
     const simAirBullets = [];
+    const simLandmines = [];
+    const simBullets = [];
+    const simSausages = [];
     const simTarget = (enemyId === 'darts') ? makeSimTarget() : null;
+    // Bomb Guy戦：最初はBomb Guyが保持。誰かに触れた瞬間からタイマー始動
+    const simBomb = (enemyId === 'bomb') ? { holder: enemy, timer: SIM_BOMB_TIME_LIMIT, started: false, exploded: false, passCooldown: 0 } : null;
+    // Twins Guy戦：もう一方の双子（HPリンク）を追加生成
+    let twinB = null;
+    if (enemyId === 'twins') {
+      twinB = makeSimChar('twins', 'enemyB');
+      twinB.x = 380; twinB.y = 380;
+      const a = Math.random() * Math.PI * 2;
+      twinB.vx = Math.cos(a) * twinB.baseSpd; twinB.vy = Math.sin(a) * twinB.baseSpd;
+      enemy.sausageCooldown = 90; twinB.sausageCooldown = 45;
+    }
     let foundX = null;
 
     for (let f = 0; f < FRAMES && ttg.hp > 0 && enemy.hp > 0; f++) {
-      simMove(ttg);
-      simMove(enemy);
+      simMove(ttg, null);
+      simMove(enemy, enemyId === 'landmine' ? simLandmines : null);
       simResolve(ttg, enemy);
+      if (twinB) { simMove(twinB, null); simResolve(ttg, twinB); simResolve(enemy, twinB); }
       if (simTarget) simMoveTarget(simTarget);
 
       // 敵の攻撃
@@ -2057,14 +2253,30 @@ function runTimeLoopSimulation(id1, id2) {
         if (enemy.airCooldown > 0) enemy.airCooldown--;
         else { simFireAir(enemy, ttg, simAirBullets); enemy.airCooldown = 120; }
       }
+      if (enemyId === 'gunman') simGunman(enemy, ttg, simBullets);
+      if (enemyId === 'landmine') simUpdateLandmines(simLandmines, ttg, enemy);
+      if (enemyId === 'gunman') simUpdateBullets(simBullets, ttg, enemy);
+      if (enemyId === 'bomb') simUpdateBomb(simBomb, ttg, enemy);
+      if (enemyId === 'twins' && twinB) {
+        simTwinsLinkHp(enemy, twinB);
+        simTwinsThrow(enemy, [ttg], simSausages);
+        simTwinsThrow(twinB, [ttg], simSausages);
+        simUpdateSausages(simSausages, enemy, twinB, [ttg]);
+      }
 
-      // TTGの攻撃（空気砲）
+      // TTGの攻撃（空気砲。ツインズ戦は生きている方をランダムに狙う）
       if (ttg.airCooldown > 0) ttg.airCooldown--;
-      else { simFireAir(ttg, enemy, simAirBullets); ttg.airCooldown = 120; }
+      else {
+        const airTarget = (twinB && twinB.hp > 0 && Math.random() < 0.5) ? twinB : enemy;
+        simFireAir(ttg, airTarget, simAirBullets);
+        ttg.airCooldown = 120;
+      }
 
       if (enemyId === 'darts') simUpdateDarts(simDarts, simTarget, ttg, enemy);
       if (enemyId === 'pingpong') simUpdatePingBalls(simPingBalls, ttg, enemy, simTarget);
       simUpdateAirBullets(simAirBullets, enemy);  // TTGの空気砲は敵に当てる
+      if (twinB && twinB.hp > 0) simUpdateAirBullets(simAirBullets, twinB);
+      if (twinB) simTwinsLinkHp(enemy, twinB);
 
       // TTGが500HP以下になった瞬間を記録
       if (ttg.hp < 500 && foundX === null) {
