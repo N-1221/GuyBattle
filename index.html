@@ -1390,7 +1390,7 @@ function updateTennis(attacker, defender) {
   // ラケットの向きを敵方向へ更新
   attacker.racketAngle = Math.atan2(defender.y - attacker.y, defender.x - attacker.x);
   if (defender.hp > 0 && dist < attacker.r + defender.r + REACH) {
-    const dmg = 90;
+    const dmg = 50;
     defender.hp = Math.max(0, defender.hp - dmg);
     defender.hitTimer = 10;
     attacker.smashCooldown = 110;
@@ -1524,7 +1524,7 @@ function updatePingBalls() {
             sfxRacketSwing();
             spawnParticles(c.x, c.y, '#A5D6A7', 8);
             b.lastHit = c;
-            b.hitCooldown = 15;
+            b.hitCooldown = 20;
             continue;
           } else {
             c.hp = Math.max(0, c.hp - 50);
