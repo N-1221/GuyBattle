@@ -1065,6 +1065,16 @@ function moveTarget() {
   if (target.y + target.r > H)  { target.y = H - target.r; target.vy = -Math.abs(target.vy); }
 }
 
+// 味方チーム判定（p1側 / p2側）。地雷などの「味方には反応しない」判定に使う。
+// トレーナーガイ本体・その召喚キャラ・ツインズの双子は同じチームとして扱う。
+function getTeamSide(c) {
+  if (!c) return null;
+  if (c === p1char || c === p1twinB || c === p1summon) return 'p1';
+  if (c === p2char || c === p2twinB || c === p2summon) return 'p2';
+  if (c.owner) return getTeamSide(c.owner); // TTG未来など、owner経由でチームを辿る
+  return null;
+}
+
 function spawnParticles(x, y, color, n) {
   for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2, s = rnd(1.5, 4);
@@ -1731,8 +1741,10 @@ function updateLandmines() {
     const m = landmines[i];
     if (m.armTimer > 0) { m.armTimer--; continue; } // 設置直後の誤爆防止
     let exploded = false;
+    const ownerTeam = getTeamSide(m.owner);
     for (const c of allChars) {
       if (c === m.owner) continue; // 設置した本人には反応しない
+      if (ownerTeam && getTeamSide(c) === ownerTeam) continue; // 味方（トレーナーガイ本体や他の召喚キャラなど）にも反応しない
       const d = Math.hypot(c.x - m.x, c.y - m.y);
       if (d < c.r + m.r) {
         explodeLandmine(m, c);
@@ -2971,50 +2983,17 @@ function drawChar(c, enemy) {
   // トレイル
   for (let i = 0; i < c.trail.length; i++) {
     const a = (i / c.trail.length) * 0.3;
-    if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong') {
+    if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis') {
       ctx.fillStyle = c.color + Math.round(a * 255).toString(16).padStart(2, '0');
       ctx.fill();
     }
   }
   // 本体（ボクシング・ダーツガイ・タイムトラベラーガイ・ピンポンガイは画像を使うので円は描かない）
-  if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong') {
+  if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis') {
     ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
     ctx.fillStyle = c.hitTimer > 0 ? c.lightColor : c.color;
     ctx.fill();
     if (c.hitTimer > 0) { ctx.strokeStyle = '#FAC775'; ctx.lineWidth = 3; ctx.stroke(); }
-  }
-  // Tennis Guyのラケット描画
-  if (c.type === 'tennis' && !dead) {
-    // スイングアニメーション：swingTimerが残っている間は弧を描く
-    if (c.swingTimer > 0) c.swingTimer--;
-    let ang = c.racketAngle || 0;
-    if (c.swingTimer > 0) {
-      const t = 1 - c.swingTimer / 18; // 0→1
-      const swing = Math.sin(t * Math.PI) * 1.4; // 最大±80度
-      ang = c.swingBaseAngle + swing;
-    }
-    const armLen = c.r + 20;
-    const ax = c.x + Math.cos(ang) * armLen;
-    const ay = c.y + Math.sin(ang) * armLen;
-    const rax = ax + Math.cos(ang) * 16;
-    const ray = ay + Math.sin(ang) * 16;
-    // スイング中は軌跡を薄く表示
-    if (c.swingTimer > 0) {
-      const alpha = c.swingTimer / 18 * 0.4;
-      ctx.strokeStyle = `rgba(165,214,167,${alpha})`; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(c.x, c.y, armLen + 16, c.swingBaseAngle - 1.2, c.swingBaseAngle + 1.2); ctx.stroke();
-    }
-    // グリップ
-    ctx.strokeStyle = '#8B4513'; ctx.lineWidth = 5; ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(c.x + Math.cos(ang) * c.r * 0.6, c.y + Math.sin(ang) * c.r * 0.6);
-    ctx.lineTo(ax, ay); ctx.stroke();
-    // ラケットフレーム
-    ctx.strokeStyle = c.swingTimer > 0 ? '#AFFFAF' : '#fff'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.ellipse(rax, ray, 16, 11, ang, 0, Math.PI * 2); ctx.stroke();
-    // 網目
-    ctx.strokeStyle = 'rgba(200,255,200,0.7)'; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.ellipse(rax, ray, 11, 7, ang, 0, Math.PI * 2); ctx.stroke();
   }
   // Gunman Guyの銃描画（発砲時はマズルフラッシュ、クールダウン中は銃が煙る）
   if (c.type === 'gunman' && !dead) {
@@ -3088,7 +3067,8 @@ function drawChar(c, enemy) {
       ? dartsGuy_throw_IMG : dartsGuy_IMG;
     const imgW = dartsImg.naturalWidth;
     const imgH = dartsImg.naturalHeight;
-    const scale = (c.r * 2.2) / Math.max(imgW, imgH);
+    const sizeBoost = isThrow ? 1.15 : 1; // 投擲モーション画像は一回り大きく表示
+    const scale = (c.r * 2.2 * sizeBoost) / Math.max(imgW, imgH);
     const dw = imgW * scale;
     const dh = imgH * scale;
     // 的が右にいる場合は左右反転（元画像は左向き）
@@ -3131,6 +3111,31 @@ function drawChar(c, enemy) {
       ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
       ctx.restore();
     }
+  } else if (c.type === 'tennis') {
+    // swingTimer カウントダウン（スイング演出自体は画像切替のみ）
+    if (c.swingTimer > 0) c.swingTimer--;
+    // クールタイム中（smashCooldown > 0）はショット画像、それ以外は通常画像
+    const isShot = c.smashCooldown > 0;
+    const img = (isShot && TennisGuy_shot_IMG.complete && TennisGuy_shot_IMG.naturalWidth > 0)
+      ? TennisGuy_shot_IMG
+      : (TennisGuy_IMG.complete && TennisGuy_IMG.naturalWidth > 0 ? TennisGuy_IMG : null);
+    if (img) {
+      const imgW = img.naturalWidth;
+      const imgH = img.naturalHeight;
+      // ショット画像は腕を広げて横に大きいため、幅基準だと縮んで見えてしまう。
+      // 高さ基準でスケールすることで、体の大きさは通常時と揃えつつ腕は外側にはみ出させる。
+      const sizeBoost = isShot ? 1.25 : 1;
+      const scaleBasis = isShot ? imgH : Math.max(imgW, imgH);
+      const scale = (c.r * 2.2 * sizeBoost) / scaleBasis;
+      const dw = imgW * scale;
+      const dh = imgH * scale;
+      const flipX = enemy && enemy.x < c.x;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      if (flipX) ctx.scale(-1, 1);
+      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+    }
   } else if (c.type !== 'boxing' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'darts') {
     ctx.font = '40px serif';
     ctx.textAlign = 'center';
@@ -3140,13 +3145,13 @@ function drawChar(c, enemy) {
   // ダメージフラッシュ（全キャラ共通：hitTimer中は体を白く塗りつぶす）
   if (c.hitTimer > 0) {
     const flashAlpha = Math.min(1, c.hitTimer / 5);
-    if (c.type === 'boxing' || c.type === 'darts' || c.type === 'timetraveler' || c.type === 'pingpong') {
+    if (c.type === 'boxing' || c.type === 'darts' || c.type === 'timetraveler' || c.type === 'pingpong' || c.type === 'tennis') {
       // 画像ベースのキャラ：直前に描画した画像の輪郭（シルエット）に沿って白く塗る
       if (!c._flashCanvas) {
         c._flashCanvas = document.createElement('canvas');
         c._flashCtx = c._flashCanvas.getContext('2d');
       }
-      const fw = Math.ceil(c.r * 2.4), fh = Math.ceil(c.r * 2.4);
+      const fw = Math.ceil(c.r * 3.0), fh = Math.ceil(c.r * 3.0);
       if (c._flashCanvas.width !== fw || c._flashCanvas.height !== fh) {
         c._flashCanvas.width = fw; c._flashCanvas.height = fh;
       }
@@ -3155,7 +3160,7 @@ function drawChar(c, enemy) {
       fctx.save();
       fctx.translate(fw / 2, fh / 2);
       // 直前の描画と同じ画像・反転状態を再現
-      let img = null, flipX = false, flipY = false;
+      let img = null, flipX = false, flipY = false, sizeBoost = 1, useHeightBasis = false;
       if (c.type === 'boxing') {
         img = BOXER_IMG;
         if (c.dodgeAnimTimer > 0 && BOXER_DODGE_IMG.complete && BOXER_DODGE_IMG.naturalWidth > 0) img = BOXER_DODGE_IMG;
@@ -3163,8 +3168,9 @@ function drawChar(c, enemy) {
         else if (c.punchAnimTimer > 0 && BOXER_PUNCH_IMG.complete && BOXER_PUNCH_IMG.naturalWidth > 0) img = BOXER_PUNCH_IMG;
         flipX = enemy && enemy.x < c.x;
       } else if (c.type === 'darts') {
-        img = (c.throwTimer > 0 && dartsGuy_throw_IMG.complete && dartsGuy_throw_IMG.naturalWidth > 0)
-          ? dartsGuy_throw_IMG : dartsGuy_IMG;
+        const isThrow = c.throwTimer > 0 && dartsGuy_throw_IMG.complete && dartsGuy_throw_IMG.naturalWidth > 0;
+        img = isThrow ? dartsGuy_throw_IMG : dartsGuy_IMG;
+        sizeBoost = isThrow ? 1.15 : 1;
         flipX = target && target.x > c.x;
       } else if (c.type === 'timetraveler') {
         img = timetravelarGuy_IMG;
@@ -3172,10 +3178,18 @@ function drawChar(c, enemy) {
       } else if (c.type === 'pingpong') {
         img = (c.swingTimer > 0 && pingpongGuy_shot_IMG.complete && pingpongGuy_shot_IMG.naturalWidth > 0) ? pingpongGuy_shot_IMG : pingpongGuy_IMG;
         flipX = enemy && enemy.x < c.x;
+      } else if (c.type === 'tennis') {
+        const isShot = c.smashCooldown > 0 && TennisGuy_shot_IMG.complete && TennisGuy_shot_IMG.naturalWidth > 0;
+        img = isShot ? TennisGuy_shot_IMG : TennisGuy_IMG;
+        // ショット画像は腕を広げて横に大きいため、高さ基準でスケールして体の大きさを保つ
+        sizeBoost = isShot ? 1.25 : 1;
+        useHeightBasis = isShot;
+        flipX = enemy && enemy.x < c.x;
       }
       if (img && img.complete && img.naturalWidth > 0) {
         const imgW = img.naturalWidth, imgH = img.naturalHeight;
-        const scale = (c.r * 2.2) / Math.max(imgW, imgH);
+        const scaleBasis = useHeightBasis ? imgH : Math.max(imgW, imgH);
+        const scale = (c.r * 2.2 * sizeBoost) / scaleBasis;
         const dw = imgW * scale, dh = imgH * scale;
         if (flipX) fctx.scale(-1, 1);
         if (flipY) fctx.scale(1, -1);
@@ -3915,6 +3929,10 @@ const pingpongGuy_IMG = new Image();
 pingpongGuy_IMG.src = "pingpongGuy.png"
 const pingpongGuy_shot_IMG = new Image();
 pingpongGuy_shot_IMG.src = "pingpongGuy_shot.png"
+const TennisGuy_IMG = new Image();
+TennisGuy_IMG.src = "TennisGuy.png"
+const TennisGuy_shot_IMG = new Image();
+TennisGuy_shot_IMG.src = "TennisGuy_shot.png"
 buildCharSelect();
 </script>
 </body>
