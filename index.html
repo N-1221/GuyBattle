@@ -249,6 +249,7 @@ const BOMB_BLINK_TIME = 3 * 60;    // 残り3秒から点滅警告
 const BOMB_PASS_COOLDOWN = 20;     // 受け渡し直後の連続受け渡し防止フレーム数
 let landmines = []; // 地雷ガイが設置した地雷の配列
 const LANDMINE_STOP_TIME = 150;    // 壁に激突してから動けるようになるまでのフレーム数（約2.5秒）
+const LANDMINE_MINE_COOLDOWN = 90; // 動けるようになった後、次の地雷を設置できるようになるまでの追加クールダウン（約1.5秒）
 const LANDMINE_MAX_PER_OWNER = 4;  // 1人が同時に設置できる地雷の上限（超えたら古いものから消える）
 let bullets = []; // ガンマンガイの銃弾の配列
 let eggs = []; // トレーナーガイの卵の配列
@@ -442,7 +443,9 @@ const ROSTER = [
         name: 'Landmine Guy', emoji: '🧨',
         color: '#6D4C28', lightColor: '#C8A165',
         type: 'landmine',
-        wallStopTimer: 0 // 壁に激突した後、動けなくなる残りフレーム数
+        wallStopTimer: 0, // 壁に激突した後、動けなくなる残りフレーム数
+        mineSmileTimer: 0, // 地雷設置直後の数秒間、笑顔画像を表示する残りフレーム数
+        mineCooldown: 0 // 地雷を設置してから次の地雷を設置できるようになるまでのクールダウン
       };
     }
   },
@@ -705,6 +708,8 @@ function transformChangeGuy(c) {
 // ============================================================
 function moveChar(c) {
   if (c.hitstop > 0) { c.hitstop--; return; }
+  // 地雷ガイ：クールダウンは動けない間・動ける間を問わず毎フレーム減らす
+  if (c.type === 'landmine' && c.mineCooldown > 0) c.mineCooldown--;
   // 地雷ガイ：壁に激突した直後は数秒間その場から動けない
   if (c.type === 'landmine' && c.wallStopTimer > 0) {
     c.wallStopTimer--;
@@ -726,8 +731,10 @@ function moveChar(c) {
   if (c.y - c.r < 0)  { c.y = c.r;     c.vy =  Math.abs(c.vy); hitWall = true; wallSide = 'top'; }
   if (c.y + c.r > H)  { c.y = H - c.r; c.vy = -Math.abs(c.vy); hitWall = true; wallSide = 'bottom'; }
   // 地雷ガイ：壁に触れたらその場で停止し、壁際に地雷を設置
-  if (c.type === 'landmine' && hitWall && c.hp > 0) {
+  // ただしクールダウン中は停止も設置もせず、そのまま普通に跳ね返るだけにする
+  if (c.type === 'landmine' && hitWall && c.hp > 0 && c.mineCooldown <= 0) {
     c.wallStopTimer = LANDMINE_STOP_TIME;
+    c.mineCooldown = LANDMINE_STOP_TIME + LANDMINE_MINE_COOLDOWN;
     plantLandmine(c, wallSide);
   }
   // チェンジングガイ：壁に反射するたびに別のガイへランダム変身する
@@ -785,6 +792,17 @@ function getTeamSide(c) {
   if (c === p2char || c === p2twinB || c === p2summon) return 'p2';
   if (c.owner) return getTeamSide(c.owner); // TTG未来など、owner経由でチームを辿る
   return null;
+}
+
+// 候補の中から attacker に最も近い生存キャラを返す（召喚キャラの攻撃対象選びに使用）
+function nearestAliveTarget(attacker, candidates) {
+  let best = null, bestD = Infinity;
+  for (const c of candidates) {
+    if (!c || c.hp <= 0) continue;
+    const d = Math.hypot(c.x - attacker.x, c.y - attacker.y);
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  return best;
 }
 
 function spawnParticles(x, y, color, n) {
@@ -1119,17 +1137,21 @@ function updatePingpong(attacker, defender) {
   // 初回1秒後に発射
   if (!attacker.ballFired) {
     if (!attacker.ballDelay) attacker.ballDelay = 60;
-    if (--attacker.ballDelay <= 0) { attacker.ballFired = true; firePingBall(attacker); }
+    if (--attacker.ballDelay <= 0) { attacker.ballFired = true; firePingBall(attacker, defender); }
   }
   // swingTimerカウントダウン（drawChar内でも減らしているが念のため）
 }
 
-function firePingBall(owner) {
+function firePingBall(owner, target) {
   // owner === p1char という単純比較だと、トレーナーガイが召喚した卓球ガイ（p1summon）が
   // 発射した場合に「敵」がp1char（自陣）になってしまうバグがあったため、
-  // チーム判定(getTeamSide)を使って正しい敵を狙うようにする
-  const ownerSide = getTeamSide(owner);
-  const enemy = ownerSide === 'p1' ? p2char : p1char;
+  // チーム判定(getTeamSide)を使って正しい敵を狙うようにする。
+  // targetが明示的に渡された場合はそちらを優先する（敵の召喚キャラを狙う場合など）
+  let enemy = target;
+  if (!enemy || enemy.hp <= 0) {
+    const ownerSide = getTeamSide(owner);
+    enemy = ownerSide === 'p1' ? p2char : p1char;
+  }
   const dx = enemy.x - owner.x, dy = enemy.y - owner.y;
   const d = Math.hypot(dx, dy) || 1;
   const spd = 16.0;
@@ -1194,7 +1216,9 @@ function updatePingBalls() {
         if (Math.hypot(c.x - b.x, c.y - b.y) >= c.r + b.r) continue;
         // 味方（同じチーム）にはダメージも打ち返しも発生させない
         // （トレーナーガイが召喚した卓球ガイのボールが味方に当たってしまうバグの修正）
-        if (getTeamSide(c) && getTeamSide(c) === getTeamSide(b.lastHit)) continue;
+        // ただし「自分自身」への跳ね返り（壁に当たって自打球が戻ってくる）は
+        // 打ち返し処理自体は必要なので、ここではブロックしない
+        if (c !== b.lastHit && getTeamSide(c) && getTeamSide(c) === getTeamSide(b.lastHit)) continue;
         // 連続ヒット防止（同じキャラへの連打をクールダウンで防ぐ）
         if (b.hitCooldown > 0 && b.lastHit === c) continue;
         if (b.damageCooldown > 0 && b.lastDamaged === c) continue;
@@ -1223,7 +1247,8 @@ function updatePingBalls() {
             continue;
           } else if (c.type === 'tennis' && c.smashCooldown <= 0) {
             // テニスガイはラケットでボールを打ち返す（ダメージなし）※クールダウン中は打ち返せない
-            const enemyC = (c === p1char) ? p2char : p1char;
+            const cSide = getTeamSide(c);
+            const enemyC = cSide === 'p1' ? p2char : p1char;
             const tx = enemyC.x - b.x, ty = enemyC.y - b.y;
             const td = Math.hypot(tx, ty) || 1;
             const retSpd = Math.max(b.spd || 16, 16);
@@ -1237,7 +1262,9 @@ function updatePingBalls() {
             b.lastHit = c;
             b.hitCooldown = 20;
             continue;
-          } else {
+          } else if (c !== b.lastHit) {
+            // c === b.lastHit の場合は「自分が打ち返した球が壁などに跳ねて戻ってきた」だけなので、
+            // クールダウン中でもダメージを受けない（自分の球で自爆してしまうバグの修正）
             c.hp = Math.max(0, c.hp - 50);
             c.hitTimer = 10;
             sfxPingHit();
@@ -1434,6 +1461,14 @@ function plantLandmine(owner, wallSide) {
   if (wallSide === 'top')    my = mineR;
   if (wallSide === 'bottom') my = H - mineR;
   landmines.push({ x: mx, y: my, r: mineR, owner, armTimer: 18, wallSide });
+  // 1人が設置できる地雷の上限を超えたら、古いものから消す
+  const ownerMines = landmines.filter(m => m.owner === owner);
+  while (ownerMines.length > LANDMINE_MAX_PER_OWNER) {
+    const oldest = ownerMines.shift();
+    const idx = landmines.indexOf(oldest);
+    if (idx !== -1) landmines.splice(idx, 1);
+  }
+  owner.mineSmileTimer = 150; // 設置後しばらく（約2.5秒）は笑顔画像を表示
   spawnParticles(mx, my, '#8D6E63', 12);
   spawnParticles(mx, my, '#5D4037', 8);
   dmgTexts.push({ x: mx, y: my - owner.r - 30, text: '地雷設置！', life: 1.0, color: '#FF8A65' });
@@ -1584,7 +1619,8 @@ function updateBullets() {
     if (b.x < -20 || b.x > W + 20) { bullets.splice(i, 1); continue; }
     let hit = false;
     for (const c of allChars) {
-      if (c === b.owner) continue;
+      // 発射者本人だけでなく、同じチームの味方にも銃弾は当たらないようにする
+      if (getTeamSide(c) && getTeamSide(c) === getTeamSide(b.owner)) continue;
       if (Math.hypot(c.x - b.x, c.y - b.y) >= c.r + b.r) continue;
       const dmg = 60;
       c.hp = Math.max(0, c.hp - dmg);
@@ -1720,20 +1756,28 @@ function drawEgg(e) {
 }
 
 function drawBullet(b) {
-  for (let i = 0; i < b.trail.length; i++) {
-    const a = (i / b.trail.length) * 0.5;
-    ctx.beginPath();
-    ctx.arc(b.trail[i].x, b.trail[i].y, b.r * 0.7, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(255,213,79,${a})`;
-    ctx.fill();
-  }
+  // 丸い弾ではなく、進行方向に伸びる「光の筋」にすることでスピード感を出す
+  const angle = Math.atan2(b.vy, b.vx);
+  const speed = Math.hypot(b.vx, b.vy) || 14;
+  const len = Math.max(34, speed * 2.6); // 弾速が速いほど筋を長くする
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(angle);
+  // 後方にフェードアウトする光の筋（先端が最も明るい）
+  const grad = ctx.createLinearGradient(-len, 0, 0, 0);
+  grad.addColorStop(0, 'rgba(255,241,158,0)');
+  grad.addColorStop(0.55, 'rgba(255,213,79,0.55)');
+  grad.addColorStop(1, 'rgba(255,253,231,0.95)');
+  ctx.fillStyle = grad;
   ctx.beginPath();
-  ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-  ctx.fillStyle = '#FFD54F';
+  ctx.ellipse(-len / 2, 0, len / 2, b.r * 0.5, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = '#795548';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
+  // 先端の輝く核
+  ctx.beginPath();
+  ctx.arc(0, 0, b.r * 0.55, 0, Math.PI * 2);
+  ctx.fillStyle = '#FFFDE7';
+  ctx.fill();
+  ctx.restore();
 }
 
 // ============================================================
@@ -2679,50 +2723,17 @@ function drawChar(c, enemy) {
   // トレイル
   for (let i = 0; i < c.trail.length; i++) {
     const a = (i / c.trail.length) * 0.3;
-    if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis') {
+    if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis' && c.type !== 'landmine' && c.type !== 'gunman') {
       ctx.fillStyle = c.color + Math.round(a * 255).toString(16).padStart(2, '0');
       ctx.fill();
     }
   }
   // 本体（ボクシング・ダーツガイ・タイムトラベラーガイ・ピンポンガイは画像を使うので円は描かない）
-  if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis') {
+  if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis' && c.type !== 'landmine' && c.type !== 'gunman') {
     ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
     ctx.fillStyle = c.hitTimer > 0 ? c.lightColor : c.color;
     ctx.fill();
     if (c.hitTimer > 0) { ctx.strokeStyle = '#FAC775'; ctx.lineWidth = 3; ctx.stroke(); }
-  }
-  // Gunman Guyの銃描画（発砲時はマズルフラッシュ、クールダウン中は銃が煙る）
-  if (c.type === 'gunman' && !dead) {
-    if (c.gunFireTimer > 0) c.gunFireTimer--;
-    const overheating = c.overheatCooldown > 0;
-    const dir = c.aimDir || 1;
-    const gx = c.x + dir * (c.r - 6);
-    const gy = c.y;
-    ctx.save();
-    ctx.translate(gx, gy);
-    ctx.scale(dir, 1);
-    ctx.fillStyle = overheating ? '#8D8378' : '#3E2723';
-    ctx.fillRect(0, -5, 26, 10);
-    ctx.fillRect(4, 5, 8, 14);
-    ctx.strokeStyle = '#1B0F0A'; ctx.lineWidth = 1.5;
-    ctx.strokeRect(0, -5, 26, 10);
-    ctx.restore();
-    if (c.gunFireTimer > 0) {
-      const flashR = 10 * (c.gunFireTimer / 10);
-      ctx.beginPath();
-      ctx.arc(gx + dir * 30, gy, flashR, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,213,79,0.85)';
-      ctx.fill();
-    }
-    if (overheating) {
-      const t = Date.now() / 300;
-      ctx.font = '16px serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.globalAlpha = 0.6 + 0.3 * Math.sin(t);
-      ctx.fillText('💨', gx + dir * 20, gy - 14 - 4 * Math.sin(t));
-      ctx.globalAlpha = 1;
-    }
   }
   // 絵文字 or 画像
   ctx.globalAlpha = dead ? 0.25 : 1;
@@ -2841,7 +2852,48 @@ function drawChar(c, enemy) {
       }
       ctx.restore();
     }
-  } else if (c.type !== 'boxing' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'darts') {
+  } else if (c.type === 'landmine') {
+    // 地雷設置後しばらくは笑顔画像、それ以外は通常画像
+    if (c.mineSmileTimer > 0) c.mineSmileTimer--;
+    const isSmile = c.mineSmileTimer > 0;
+    const img = (isSmile && LandmineGuy_smile_IMG.complete && LandmineGuy_smile_IMG.naturalWidth > 0)
+      ? LandmineGuy_smile_IMG
+      : (LandmineGuy_IMG.complete && LandmineGuy_IMG.naturalWidth > 0 ? LandmineGuy_IMG : null);
+    if (img) {
+      const imgW = img.naturalWidth;
+      const imgH = img.naturalHeight;
+      const scale = (c.r * 2.2) / Math.max(imgW, imgH);
+      const dw = imgW * scale;
+      const dh = imgH * scale;
+      const flipX = enemy && enemy.x < c.x;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      if (flipX) ctx.scale(-1, 1);
+      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+    }
+  } else if (c.type === 'gunman') {
+    // gunFireTimerが発砲中(ショット画像表示)の残りフレームを管理する
+    if (c.gunFireTimer > 0) c.gunFireTimer--;
+    // 発砲中はショット画像、それ以外は通常画像
+    const isShooting = c.gunFireTimer > 0;
+    const img = (isShooting && GunmanGuy_shot_IMG.complete && GunmanGuy_shot_IMG.naturalWidth > 0)
+      ? GunmanGuy_shot_IMG
+      : (GunmanGuy_IMG.complete && GunmanGuy_IMG.naturalWidth > 0 ? GunmanGuy_IMG : null);
+    if (img) {
+      const imgW = img.naturalWidth;
+      const imgH = img.naturalHeight;
+      const scale = (c.r * 2.2) / Math.max(imgW, imgH);
+      const dw = imgW * scale;
+      const dh = imgH * scale;
+      const flipX = enemy && enemy.x < c.x;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      if (flipX) ctx.scale(-1, 1);
+      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+    }
+  } else if (c.type !== 'boxing' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'darts' && c.type !== 'landmine' && c.type !== 'gunman') {
     ctx.font = '40px serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -2850,7 +2902,7 @@ function drawChar(c, enemy) {
   // ダメージフラッシュ（全キャラ共通：hitTimer中は体を白く塗りつぶす）
   if (c.hitTimer > 0) {
     const flashAlpha = Math.min(1, c.hitTimer / 5);
-    if (c.type === 'boxing' || c.type === 'darts' || c.type === 'timetraveler' || c.type === 'pingpong' || c.type === 'tennis') {
+    if (c.type === 'boxing' || c.type === 'darts' || c.type === 'timetraveler' || c.type === 'pingpong' || c.type === 'tennis' || c.type === 'landmine' || c.type === 'gunman') {
       // 画像ベースのキャラ：直前に描画した画像の輪郭（シルエット）に沿って白く塗る
       if (!c._flashCanvas) {
         c._flashCanvas = document.createElement('canvas');
@@ -2898,6 +2950,12 @@ function drawChar(c, enemy) {
           sizeBoost = 0.95;
           useHeightBasis = true;
         }
+      } else if (c.type === 'landmine') {
+        img = (c.mineSmileTimer > 0 && LandmineGuy_smile_IMG.complete && LandmineGuy_smile_IMG.naturalWidth > 0) ? LandmineGuy_smile_IMG : LandmineGuy_IMG;
+        flipX = enemy && enemy.x < c.x;
+      } else if (c.type === 'gunman') {
+        img = (c.gunFireTimer > 0 && GunmanGuy_shot_IMG.complete && GunmanGuy_shot_IMG.naturalWidth > 0) ? GunmanGuy_shot_IMG : GunmanGuy_IMG;
+        flipX = enemy && enemy.x < c.x;
       }
       if (img && img.complete && img.naturalWidth > 0) {
         const imgW = img.naturalWidth, imgH = img.naturalHeight;
@@ -2927,20 +2985,6 @@ function drawChar(c, enemy) {
       ctx.fillStyle = '#ffffff';
       ctx.fill();
       ctx.restore();
-    }
-  }
-  // 地雷ガイ：壁激突で停止中は頭上に星を回して「動けない」ことを示す
-  if (c.type === 'landmine' && !dead && c.wallStopTimer > 0) {
-    const n = 3;
-    const t = Date.now() / 200;
-    for (let i = 0; i < n; i++) {
-      const ang = t + (Math.PI * 2 / n) * i;
-      const sx = c.x + Math.cos(ang) * (c.r * 0.55);
-      const sy = c.y - c.r - 22 + Math.sin(ang) * 8;
-      ctx.font = '18px serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('⭐', sx, sy);
     }
   }
   ctx.globalAlpha = 1;
@@ -3421,11 +3465,14 @@ function loop() {
     if (p1twinB) resolveCollision(p1twinB, p1summon);
     if (p2twinB) resolveCollision(p2twinB, p1summon);
     if (p2summon && p2summon.hp > 0) resolveCollision(p2summon, p1summon);
-    // 召喚キャラ自身の攻撃（相手本体を狙う）
-    if (p1summon.type === 'boxing') updateBoxing(p1summon, p2char);
-    if (p1summon.type === 'tennis') updateTennis(p1summon, p2char);
-    if (p1summon.type === 'gunman') updateGunman(p1summon, p2char);
-    if (p1summon.type === 'pingpong') updatePingpong(p1summon, p2char);
+    // 召喚キャラ自身の攻撃：相手本体・敵の召喚キャラのうち、近い方を狙う
+    // （常に敵の召喚キャラを優先していると、敵トレーナー本体を一切攻撃しなくなるバグがあったため、
+    //   距離が近い方を狙うようにして、状況に応じてどちらとも戦えるようにする）
+    const p1SummonTarget = nearestAliveTarget(p1summon, [p2char, p2summon]) || p2char;
+    if (p1summon.type === 'boxing') updateBoxing(p1summon, p1SummonTarget);
+    if (p1summon.type === 'tennis') updateTennis(p1summon, p1SummonTarget);
+    if (p1summon.type === 'gunman') updateGunman(p1summon, p1SummonTarget);
+    if (p1summon.type === 'pingpong') updatePingpong(p1summon, p1SummonTarget);
     // 相手本体からの攻撃も召喚キャラを狙えるようにする
     if (p2char.type === 'boxing') updateBoxing(p2char, p1summon);
     if (p2char.type === 'tennis') updateTennis(p2char, p1summon);
@@ -3442,10 +3489,12 @@ function loop() {
     resolveCollision(p1char, p2summon);
     if (p1twinB) resolveCollision(p1twinB, p2summon);
     if (p2twinB) resolveCollision(p2twinB, p2summon);
-    if (p2summon.type === 'boxing') updateBoxing(p2summon, p1char);
-    if (p2summon.type === 'tennis') updateTennis(p2summon, p1char);
-    if (p2summon.type === 'gunman') updateGunman(p2summon, p1char);
-    if (p2summon.type === 'pingpong') updatePingpong(p2summon, p1char);
+    // 召喚キャラ自身の攻撃：相手本体・敵の召喚キャラのうち、近い方を狙う
+    const p2SummonTarget = nearestAliveTarget(p2summon, [p1char, p1summon]) || p1char;
+    if (p2summon.type === 'boxing') updateBoxing(p2summon, p2SummonTarget);
+    if (p2summon.type === 'tennis') updateTennis(p2summon, p2SummonTarget);
+    if (p2summon.type === 'gunman') updateGunman(p2summon, p2SummonTarget);
+    if (p2summon.type === 'pingpong') updatePingpong(p2summon, p2SummonTarget);
     if (p1char.type === 'boxing') updateBoxing(p1char, p2summon);
     if (p1char.type === 'tennis') updateTennis(p1char, p2summon);
     if (p1char.type === 'gunman') updateGunman(p1char, p2summon);
@@ -3667,6 +3716,14 @@ const TENNIS_BODY_CY = 436;   // 胴体の中心Y（画像ピクセル座標）
 const TENNIS_BODY_H = 428;    // 胴体（頭上〜裾）の高さ（画像ピクセル）
 const TennisGuy_shot_IMG = new Image();
 TennisGuy_shot_IMG.src = "TennisGuy_shot.png"
+const LandmineGuy_IMG = new Image();
+LandmineGuy_IMG.src = "LandmineGuy.png"
+const LandmineGuy_smile_IMG = new Image();
+LandmineGuy_smile_IMG.src = "LandmineGuy_smile.png"
+const GunmanGuy_IMG = new Image();
+GunmanGuy_IMG.src = "GunmanGuy.png"
+const GunmanGuy_shot_IMG = new Image();
+GunmanGuy_shot_IMG.src = "GunmanGuy_shot.png"
 buildCharSelect();
 </script>
 </body>
