@@ -112,6 +112,56 @@ canvas.width = W * GAME_SCALE;
 canvas.height = H * GAME_SCALE;
 
 // ============================================================
+// 追尾カメラ（対戦者たちを追いかけてズーム/パンする）
+// ============================================================
+const CAMERA_MIN_ZOOM = 1.0;   // 通常時（フィールド全体表示）
+const CAMERA_MAX_ZOOM = 1.7;   // 最大ズーム（キャラ同士が近いとき）
+const CAMERA_PADDING = 130;    // 被写体の周囲に確保する余白（論理px）
+const CAMERA_SMOOTH = 0.08;    // 追従の滑らかさ（0-1、大きいほど素早く追従）
+let camX = W / 2, camY = H / 2, camZoom = CAMERA_MIN_ZOOM;
+
+// 現在のカメラ目標（被写体の中心・ズーム）を計算して、なめらかに追従させる
+function updateCamera() {
+  if (!p1char || !p2char) return;
+  const targets = [p1char, p2char, p1twinB, p2twinB, p1summon, p2summon]
+    .filter(c => c && c.hp > 0);
+  if (targets.length === 0) return;
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const c of targets) {
+    minX = Math.min(minX, c.x - c.r);
+    maxX = Math.max(maxX, c.x + c.r);
+    minY = Math.min(minY, c.y - c.r);
+    maxY = Math.max(maxY, c.y + c.r);
+  }
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  const span = Math.max(maxX - minX, maxY - minY) + CAMERA_PADDING * 2;
+
+  // 被写体が収まる最大のズームを算出（狭いほど大きくズーム、離れるほど1.0に近づく）
+  let targetZoom = W / span;
+  targetZoom = Math.max(CAMERA_MIN_ZOOM, Math.min(CAMERA_MAX_ZOOM, targetZoom));
+
+  // ズームに応じた表示範囲がフィールド内に収まるよう中心をクランプ
+  const halfView = (W / targetZoom) / 2;
+  const targetX = Math.max(halfView, Math.min(W - halfView, centerX));
+  const targetY = Math.max(halfView, Math.min(H - halfView, centerY));
+
+  // なめらかに追従
+  camX += (targetX - camX) * CAMERA_SMOOTH;
+  camY += (targetY - camY) * CAMERA_SMOOTH;
+  camZoom += (targetZoom - camZoom) * CAMERA_SMOOTH;
+}
+
+// ワールド座標(論理px) -> canvasのCSS表示座標（HPバッジ等のDOMオーバーレイ用）
+function worldToScreen(wx, wy) {
+  const rectScale = (canvas.clientWidth || canvas.width) / canvas.width;
+  const px = (wx - camX) * GAME_SCALE * camZoom + canvas.width / 2;
+  const py = (wy - camY) * GAME_SCALE * camZoom + canvas.height / 2;
+  return { x: px * rectScale, y: py * rectScale, scale: GAME_SCALE * camZoom * rectScale };
+}
+
+// ============================================================
 // サウンドエンジン（Web Audio API）
 // ============================================================
 let audioCtx = null;
@@ -140,217 +190,16 @@ function playBoxingBell() {
   a.play().catch(() => {});
 }
 
-// ノイズバッファ生成（ドラム系に使用）
-function makeNoiseBuffer(ac, duration = 0.05) {
-  const len = Math.ceil(ac.sampleRate * duration);
-  const buf = ac.createBuffer(1, len, ac.sampleRate);
-  const data = buf.getChannelData(0);
-  for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1);
-  return buf;
-}
-
-// 汎用：エンベロープ付きオシレーター
-function playTone({ freq = 440, endFreq, type = 'sine', attack = 0.005, decay = 0.12,
-                    gain = 0.3, startTime, filter, filterFreq, filterEnd, filterQ = 1 } = {}) {
-  gain *= SFX_MASTER_VOLUME;
-  const ac = getAudioCtx();
-  const t = startTime ?? ac.currentTime;
-  const osc = ac.createOscillator();
-  const env = ac.createGain();
-  osc.type = type;
-  osc.frequency.setValueAtTime(freq, t);
-  if (endFreq !== undefined) osc.frequency.exponentialRampToValueAtTime(Math.max(endFreq, 1), t + attack + decay);
-  env.gain.setValueAtTime(0, t);
-  env.gain.linearRampToValueAtTime(gain, t + attack);
-  env.gain.exponentialRampToValueAtTime(0.0001, t + attack + decay);
-  let node = osc;
-  if (filter) {
-    const bq = ac.createBiquadFilter();
-    bq.type = filter;
-    bq.frequency.setValueAtTime(filterFreq ?? 2000, t);
-    if (filterEnd !== undefined) bq.frequency.exponentialRampToValueAtTime(Math.max(filterEnd, 10), t + attack + decay);
-    bq.Q.value = filterQ;
-    osc.connect(bq);
-    node = bq;
-  }
-  node.connect(env);
-  env.connect(ac.destination);
-  osc.start(t); osc.stop(t + attack + decay + 0.02);
-}
-
-// ノイズ打撃音
-function playNoise({ attack = 0.002, decay = 0.08, gain = 0.25, filterFreq = 3000, filterEnd = 400, startTime } = {}) {
-  gain *= SFX_MASTER_VOLUME;
-  const ac = getAudioCtx();
-  const t = startTime ?? ac.currentTime;
-  const src = ac.createBufferSource();
-  src.buffer = makeNoiseBuffer(ac, attack + decay + 0.02);
-  const env = ac.createGain();
-  const bq = ac.createBiquadFilter();
-  bq.type = 'bandpass';
-  bq.frequency.setValueAtTime(filterFreq, t);
-  bq.frequency.exponentialRampToValueAtTime(Math.max(filterEnd, 20), t + attack + decay);
-  bq.Q.value = 0.7;
-  env.gain.setValueAtTime(0, t);
-  env.gain.linearRampToValueAtTime(gain, t + attack);
-  env.gain.exponentialRampToValueAtTime(0.0001, t + attack + decay);
-  src.connect(bq); bq.connect(env); env.connect(ac.destination);
-  src.start(t); src.stop(t + attack + decay + 0.02);
-}
-
-// 人間の声帯を模したフォルマント合成（母音・息・うめき）
-// pitch: 声の基本周波数, f1/f2: 第1・第2フォルマント周波数
-function playVoice({ pitch = 130, pitchEnd, f1 = 800, f2 = 1200, f1End, f2End,
-                     attack = 0.01, decay = 0.12, gain = 0.18, startTime,
-                     breathGain = 0.06 } = {}) {
-  gain *= SFX_MASTER_VOLUME; breathGain *= SFX_MASTER_VOLUME;
-  const ac = getAudioCtx();
-  const t = startTime ?? ac.currentTime;
-  const dur = attack + decay;
-
-  // 声帯振動（鋸波）
-  const osc = ac.createOscillator();
-  osc.type = 'sawtooth';
-  osc.frequency.setValueAtTime(pitch, t);
-  if (pitchEnd) osc.frequency.exponentialRampToValueAtTime(Math.max(pitchEnd, 20), t + dur);
-
-  // F1フォルマント（胸部共鳴）
-  const f1filt = ac.createBiquadFilter();
-  f1filt.type = 'bandpass'; f1filt.Q.value = 5;
-  f1filt.frequency.setValueAtTime(f1, t);
-  if (f1End) f1filt.frequency.exponentialRampToValueAtTime(f1End, t + dur);
-
-  // F2フォルマント（口腔共鳴）
-  const f2filt = ac.createBiquadFilter();
-  f2filt.type = 'bandpass'; f2filt.Q.value = 4;
-  f2filt.frequency.setValueAtTime(f2, t);
-  if (f2End) f2filt.frequency.exponentialRampToValueAtTime(f2End, t + dur);
-
-  // 息成分（ノイズ）
-  const noiseSrc = ac.createBufferSource();
-  noiseSrc.buffer = makeNoiseBuffer(ac, dur + 0.02);
-  const noiseF = ac.createBiquadFilter();
-  noiseF.type = 'bandpass'; noiseF.frequency.value = f2 * 1.2; noiseF.Q.value = 0.8;
-  const noiseEnv = ac.createGain();
-  noiseEnv.gain.setValueAtTime(breathGain, t);
-  noiseEnv.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  noiseSrc.connect(noiseF); noiseF.connect(noiseEnv);
-
-  // メインエンベロープ
-  const env = ac.createGain();
-  env.gain.setValueAtTime(0, t);
-  env.gain.linearRampToValueAtTime(gain, t + attack);
-  env.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-
-  // ミックス
-  const mixer = ac.createGain(); mixer.gain.value = 1;
-  osc.connect(f1filt); f1filt.connect(mixer);
-  osc.connect(f2filt); f2filt.connect(mixer);
-  noiseEnv.connect(mixer);
-  mixer.connect(env); env.connect(ac.destination);
-
-  osc.start(t); osc.stop(t + dur + 0.02);
-  noiseSrc.start(t); noiseSrc.stop(t + dur + 0.02);
-}
-
-// ポップ音（「ポ」「コ」）：口腔の急激な開放を模擬
-function playPop({ pitch = 200, decay = 0.07, gain = 0.22, startTime } = {}) {
-  gain *= SFX_MASTER_VOLUME;
-  const ac = getAudioCtx();
-  const t = startTime ?? ac.currentTime;
-
-  // 低域バースト（口腔開放の空気圧）
-  const osc = ac.createOscillator();
-  osc.type = 'sine';
-  osc.frequency.setValueAtTime(pitch * 1.4, t);
-  osc.frequency.exponentialRampToValueAtTime(pitch * 0.3, t + decay);
-  const env = ac.createGain();
-  env.gain.setValueAtTime(gain, t);
-  env.gain.exponentialRampToValueAtTime(0.0001, t + decay);
-  osc.connect(env); env.connect(ac.destination);
-
-  // クリック成分（唇離れの瞬間）
-  const click = ac.createOscillator();
-  click.type = 'square';
-  click.frequency.setValueAtTime(pitch * 3, t);
-  click.frequency.exponentialRampToValueAtTime(pitch * 0.5, t + 0.015);
-  const cEnv = ac.createGain();
-  cEnv.gain.setValueAtTime(gain * 0.4, t);
-  cEnv.gain.exponentialRampToValueAtTime(0.0001, t + 0.015);
-  click.connect(cEnv); cEnv.connect(ac.destination);
-
-  osc.start(t); osc.stop(t + decay + 0.01);
-  click.start(t); click.stop(t + 0.02);
-}
-
 // ============================================================
-// 各アクション別効果音
+// 各アクション別効果音（音声ファイルを使うものだけ残す）
 // ============================================================
 
-// 🥊 通常パンチ：打撃音 ＋ 「うっ」という短い息（被弾者）
+// 🥊 通常パンチ：打撃音（mp3）
 const PUNCH_SOUND_SRC = "中パンチ.mp3";
 function sfxPunch() {
   const a = new Audio(PUNCH_SOUND_SRC);
   a.volume = 0.6 * SFX_MASTER_VOLUME;
   a.play().catch(() => {});
-  // 「うっ」：被弾の苦しい息
-  playVoice({ pitch: 180, pitchEnd: 140, f1: 500, f2: 900, f1End: 350, f2End: 600,
-              attack: 0.008, decay: 0.1, gain: 0.14, breathGain: 0.08 });
-}
-
-// 🥊 アッパーカット：「オラッ！」的な気合い＋「ぐあっ」打ち上げられる声
-function sfxUppercut() {
-  playNoise({ filterFreq: 4000, filterEnd: 300, decay: 0.12, gain: 0.32 });
-  playTone({ freq: 90, endFreq: 30, type: 'sawtooth', decay: 0.18, gain: 0.22 });
-  // 「オラ」：攻撃者の気合い（高め→低め）
-  playVoice({ pitch: 220, pitchEnd: 160, f1: 700, f2: 1100, f1End: 500, f2End: 800,
-              attack: 0.005, decay: 0.13, gain: 0.18, breathGain: 0.07 });
-  // 「ぐあっ」：被弾者の打ち上げ声（少し遅れて）
-  const ac = getAudioCtx();
-  playVoice({ pitch: 160, pitchEnd: 220, f1: 600, f2: 1000, f1End: 900, f2End: 1400,
-              attack: 0.01, decay: 0.18, gain: 0.15, breathGain: 0.1,
-              startTime: ac.currentTime + 0.06 });
-}
-
-// 🎯 ダーツ発射：「ふっ」という息で投げる
-function sfxDartShoot() {
-  // 「ふっ」：息を吐いて投げる
-  playVoice({ pitch: 160, pitchEnd: 120, f1: 300, f2: 2200, f1End: 200, f2End: 1800,
-              attack: 0.005, decay: 0.07, gain: 0.1, breathGain: 0.18 });
-  playNoise({ filterFreq: 7000, filterEnd: 3000, decay: 0.05, gain: 0.1 });
-  // ダーツの飛翔音（細い高音）
-  playTone({ freq: 2200, endFreq: 900, type: 'sawtooth', attack: 0.002, decay: 0.05, gain: 0.07,
-             filter: 'highpass', filterFreq: 1500 });
-}
-
-// 🎯 ダーツ命中：「いっ」という短い痛がり声
-function sfxDartHit() {
-  playNoise({ filterFreq: 5000, filterEnd: 1200, decay: 0.04, gain: 0.18 });
-  // 「いっ」
-  playVoice({ pitch: 260, pitchEnd: 200, f1: 300, f2: 2300, f1End: 250, f2End: 1900,
-              attack: 0.005, decay: 0.09, gain: 0.16, breathGain: 0.06 });
-}
-
-// 🎾 ラケットスイング・打ち返し：「はっ」という気合い
-function sfxRacketSwing() {
-  playNoise({ filterFreq: 5000, filterEnd: 1800, decay: 0.07, gain: 0.13 });
-  // 「はっ」：鋭い呼気
-  playVoice({ pitch: 200, pitchEnd: 150, f1: 700, f2: 1400, f1End: 500, f2End: 1100,
-              attack: 0.004, decay: 0.09, gain: 0.14, breathGain: 0.14 });
-}
-
-// 🎾 テニス直接スマッシュ：「ヤッ！」という強い気合い＋「うわっ」
-function sfxTennisSmash() {
-  playNoise({ filterFreq: 3500, filterEnd: 500, decay: 0.1, gain: 0.28 });
-  playTone({ freq: 140, endFreq: 50, type: 'triangle', decay: 0.14, gain: 0.18 });
-  // 「ヤッ」
-  playVoice({ pitch: 230, pitchEnd: 170, f1: 700, f2: 1200, f1End: 500, f2End: 900,
-              attack: 0.004, decay: 0.12, gain: 0.2, breathGain: 0.09 });
-  // 「うわっ」（被弾、少し遅れて）
-  const ac = getAudioCtx();
-  playVoice({ pitch: 190, pitchEnd: 140, f1: 500, f2: 900, f1End: 400, f2End: 700,
-              attack: 0.01, decay: 0.14, gain: 0.13, breathGain: 0.08,
-              startTime: ac.currentTime + 0.05 });
 }
 
 // 🏓 ピンポン発射：「カッ」
@@ -373,146 +222,9 @@ function sfxPingReturn() {
   playBallHitSound(0.45);
 }
 
-// ⏳ 空気砲発射：「フォッ」という吐息
-function sfxAirShoot() {
-  // 「フォ」：口をすぼめた強い息
-  playVoice({ pitch: 140, pitchEnd: 110, f1: 350, f2: 900, f1End: 250, f2End: 700,
-              attack: 0.01, decay: 0.14, gain: 0.15, breathGain: 0.2 });
-  playNoise({ filterFreq: 1200, filterEnd: 300, decay: 0.12, gain: 0.09 });
-  playTone({ freq: 260, endFreq: 80, type: 'sine', attack: 0.008, decay: 0.13, gain: 0.13 });
-}
-
-// ⏳ 空気砲命中：「どっ」という衝撃＋「ぐっ」
-function sfxAirHit() {
-  playTone({ freq: 170, endFreq: 50, type: 'sine', attack: 0.005, decay: 0.17, gain: 0.2 });
-  playNoise({ filterFreq: 1800, filterEnd: 300, decay: 0.09, gain: 0.14 });
-  // 「ぐっ」
-  playVoice({ pitch: 150, pitchEnd: 120, f1: 500, f2: 800, f1End: 380, f2End: 600,
-              attack: 0.008, decay: 0.12, gain: 0.15, breathGain: 0.06 });
-}
-
-// ⏳ タイムトラベル（ポポポッ！）：口腔の「ポ」を3連続
-function sfxTimeTravel() {
-  const ac = getAudioCtx();
-  const t = ac.currentTime;
-  // ポポポッ（だんだん高くなる）
-  const pops = [
-    { pitch: 160, delay: 0.00 },
-    { pitch: 200, delay: 0.10 },
-    { pitch: 260, delay: 0.20 },
-  ];
-  pops.forEach(({ pitch, delay }) => {
-    playPop({ pitch, decay: 0.09, gain: 0.28, startTime: t + delay });
-    // 各ポップに短い音色変化を添える
-    playTone({ freq: pitch * 2, endFreq: pitch * 0.8, type: 'sine',
-               attack: 0.003, decay: 0.07, gain: 0.1, startTime: t + delay });
-  });
-  // 消える時のシュワーン（高周波がフェードアウト）
-  playNoise({ filterFreq: 6000, filterEnd: 80, decay: 0.45, gain: 0.13, startTime: t + 0.18 });
-}
-
-// ⏳ 未来TTG出現（ポポポポポッ！）：5連続ポップで出現感
-function sfxTTGSpawn() {
-  const ac = getAudioCtx();
-  const t = ac.currentTime;
-  const pops = [
-    { pitch: 300, delay: 0.00 },
-    { pitch: 240, delay: 0.08 },
-    { pitch: 190, delay: 0.16 },
-    { pitch: 150, delay: 0.24 },
-    { pitch: 120, delay: 0.32 },
-  ];
-  pops.forEach(({ pitch, delay }) => {
-    playPop({ pitch, decay: 0.10, gain: 0.26, startTime: t + delay });
-    playTone({ freq: pitch * 2.2, endFreq: pitch * 0.7, type: 'triangle',
-               attack: 0.004, decay: 0.08, gain: 0.09, startTime: t + delay });
-  });
-  // ワープイン時の輝き音
-  playNoise({ filterFreq: 9000, filterEnd: 800, decay: 0.5, gain: 0.16, startTime: t });
-}
-
-// キャラ同士衝突：「どん」という体当たり＋「おっ」
-function sfxBump() {
-  playNoise({ filterFreq: 1600, filterEnd: 450, decay: 0.07, gain: 0.15 });
-  playTone({ freq: 100, endFreq: 55, type: 'sine', decay: 0.09, gain: 0.1 });
-  // 「おっ」：ぶつかった時の声
-  playVoice({ pitch: 170, pitchEnd: 140, f1: 550, f2: 950, f1End: 420, f2End: 750,
-              attack: 0.007, decay: 0.09, gain: 0.12, breathGain: 0.07 });
-}
-
 // 勝利ファンファーレ（ボクシングの鐘）
 function sfxWin() {
   playBoxingBell();
-  const ac = getAudioCtx();
-  const t = ac.currentTime;
-  // 「やったー」的な歓声（ワーっという声）
-  playVoice({ pitch: 280, pitchEnd: 320, f1: 700, f2: 1500, f1End: 800, f2End: 1800,
-              attack: 0.08, decay: 0.5, gain: 0.18, breathGain: 0.06, startTime: t + 0.4 });
-}
-
-// 💣 爆弾受け渡し：「ポン」と軽く手渡す音
-function sfxBombPass() {
-  playPop({ pitch: 650, decay: 0.05, gain: 0.22 });
-}
-
-// 💣 爆弾の点滅警告音：「ピッ」という短いビープ
-function sfxBombTick() {
-  playTone({ freq: 1300, type: 'square', attack: 0.001, decay: 0.05, gain: 0.22 });
-}
-
-// 💣 爆発：低音の衝撃＋ノイズ
-function sfxBombExplode() {
-  playNoise({ attack: 0.004, decay: 0.45, gain: 0.5, filterFreq: 1400, filterEnd: 70 });
-  playTone({ freq: 90, endFreq: 28, type: 'sawtooth', attack: 0.01, decay: 0.5, gain: 0.4 });
-  playTone({ freq: 55, endFreq: 20, type: 'sine', attack: 0.01, decay: 0.6, gain: 0.3 });
-}
-
-// 🧨 地雷設置：「カチッ」という設置音
-function sfxMinePlant() {
-  playNoise({ attack: 0.002, decay: 0.06, gain: 0.2, filterFreq: 2200, filterEnd: 800 });
-  playTone({ freq: 500, endFreq: 260, type: 'square', attack: 0.002, decay: 0.06, gain: 0.15 });
-}
-
-// 🧨 地雷爆発：低音の衝撃＋鋭いノイズ（爆弾より短く鋭い炸裂音）
-function sfxMineExplode() {
-  playNoise({ attack: 0.003, decay: 0.35, gain: 0.45, filterFreq: 2500, filterEnd: 90 });
-  playTone({ freq: 110, endFreq: 30, type: 'sawtooth', attack: 0.005, decay: 0.4, gain: 0.35 });
-  playTone({ freq: 60, endFreq: 22, type: 'sine', attack: 0.005, decay: 0.5, gain: 0.28 });
-}
-
-// 🔫 発砲音：鋭いクラック音
-function sfxGunShot() {
-  playNoise({ attack: 0.001, decay: 0.05, gain: 0.3, filterFreq: 3500, filterEnd: 900 });
-  playTone({ freq: 900, endFreq: 200, type: 'square', attack: 0.001, decay: 0.04, gain: 0.15 });
-}
-
-// 🔫 着弾音：金属的な短い衝撃音
-function sfxGunHit() {
-  playNoise({ attack: 0.001, decay: 0.06, gain: 0.28, filterFreq: 2600, filterEnd: 500 });
-  playTone({ freq: 350, endFreq: 120, type: 'triangle', attack: 0.001, decay: 0.05, gain: 0.18 });
-}
-
-// 🔄 チェンジガイ：壁バウンド変身音（ポワワ〜ンと音程が上がる）
-function sfxChangeGuy() {
-  const ac = getAudioCtx();
-  const t = ac.currentTime;
-  playTone({ freq: 300, endFreq: 950, type: 'sine', attack: 0.01, decay: 0.16, gain: 0.22, startTime: t });
-  playTone({ freq: 450, endFreq: 1300, type: 'triangle', attack: 0.01, decay: 0.14, gain: 0.14, startTime: t + 0.03 });
-  playNoise({ filterFreq: 5000, filterEnd: 1200, decay: 0.2, gain: 0.12, startTime: t });
-}
-// 🥚 トレーナーガイ：卵を投げる音
-function sfxEggThrow() {
-  playTone({ freq: 480, endFreq: 680, type: 'sine', attack: 0.005, decay: 0.09, gain: 0.16 });
-}
-// 🥚 卵が割れる音
-function sfxEggBreak() {
-  playNoise({ filterFreq: 2600, filterEnd: 500, decay: 0.12, gain: 0.22 });
-  playTone({ freq: 900, endFreq: 320, type: 'triangle', attack: 0.002, decay: 0.1, gain: 0.12 });
-}
-// 🥚 召喚キャラ誕生の音
-function sfxSummonPop() {
-  playTone({ freq: 260, endFreq: 700, type: 'square', attack: 0.004, decay: 0.14, gain: 0.16 });
-  playPop({ pitch: 380, decay: 0.09, gain: 0.18 });
 }
 
 // ============================================================
@@ -604,7 +316,7 @@ const ROSTER = [
         y: rnd(80, H-80),
         vx: v.vx, vy: v.vy, baseSpd: s,
         r: 55, hp: 1000, maxHp: 1000,
-        smashCooldown: 110, hitTimer: 0, hitstop: 0, knockback: 0, racketAngle: 0, swingTimer: 0, swingBaseAngle: 0,
+        smashCooldown: 170, hitTimer: 0, hitstop: 0, knockback: 0, racketAngle: 0, swingTimer: 0, swingBaseAngle: 0,
         trail: [],
         name: 'Tennis Guy', emoji: '🎾',
         color: '#4CAF50', lightColor: '#A5D6A7',
@@ -896,6 +608,8 @@ function startBattle(id1, id2) {
     bomb = null;
   }
   over = false; running = true;
+  // 追尾カメラをフィールド全体表示にリセット
+  camX = W / 2; camY = H / 2; camZoom = CAMERA_MIN_ZOOM;
   document.getElementById('name1').textContent = def1.emoji + ' ' + def1.name;
   document.getElementById('name2').textContent = def2.emoji + ' ' + def2.name;
   document.getElementById('msg').textContent = '戦闘中...';
@@ -984,7 +698,6 @@ function transformChangeGuy(c) {
   }
   spawnParticles(c.x, c.y, '#FFC107', 26);
   spawnParticles(c.x, c.y, '#ffffff', 12);
-  sfxChangeGuy();
 }
 
 // ============================================================
@@ -1049,7 +762,6 @@ function resolveCollision(a, b) {
   const dvx = b.vx - a.vx, dvy = b.vy - a.vy;
   const dot = dvx * nx + dvy * ny;
   if (dot < 0) {
-    sfxBump();
     a.vx += dot * nx; a.vy += dot * ny;
     b.vx -= dot * nx; b.vy -= dot * ny;
   }
@@ -1153,7 +865,6 @@ function updateBoxing(attacker, defender) {
     defender.knockback = 45;
     // 被弾者のみ長めにストップ（攻撃者は動き続ける）
     defender.hitstop = 0;
-    sfxUppercut();
     spawnParticles(defender.x, defender.y, '#FFD700', 20);
     spawnParticles(defender.x, defender.y, '#FF6B00', 10);
     spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#FFD700');
@@ -1171,7 +882,6 @@ function updateBoxing(attacker, defender) {
       attacker.punchCooldown = 24;
       attacker.punchAnimTimer = 14;
       attacker.comboCount = 0; // 吹っ飛ばしたらコンボはリセットして次のチェーンへ
-      sfxUppercut();
       spawnParticles(defender.x, defender.y, '#FFD700', 16);
       spawnParticles(defender.x, defender.y, '#FAC775', 10);
       spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#FFD700');
@@ -1223,7 +933,6 @@ function updateDarts_burst(attacker) {
     y: attacker.y + (dy / d) * spawnDist,
     vx: dx/d*spd, vy: dy/d*spd, stuck: false, stuckTimer: 0, owner: attacker
   });
-  sfxDartShoot();
   attacker.throwTimer = 18; // 投げモーション表示フレーム数
   attacker.burstCount--;
   attacker.burstInterval = 3;
@@ -1246,7 +955,6 @@ function spawnDartTargetBurst(origin, owner) {
     });
   }
   spawnParticles(origin.x, origin.y, '#FF3300', 40);
-  sfxUppercut();
 }
 
 function updateDartProjectiles() {
@@ -1312,7 +1020,6 @@ function updateDartProjectiles() {
         const dmg = d.isBurst ? 50 : dmgPool[Math.floor(Math.random() * dmgPool.length)];
         tgt.hp = Math.max(0, tgt.hp - dmg);
         tgt.hitTimer = 10;
-        sfxDartHit();
         spawnParticles(tgt.x, tgt.y, '#F0997B', 8);
         spawnDmg(tgt.x, tgt.y - tgt.r - 12, dmg, '#F09595');
         d.stuck = true; d.stuckTimer = 40; dartHit = true; break;
@@ -1375,9 +1082,8 @@ function updateTennis(attacker, defender) {
       d.vy = (ty / td) * 7;
       d.owner = attacker;
       attacker.swingBaseAngle = attacker.racketAngle; attacker.swingTimer = 18;
-      sfxRacketSwing();
       spawnParticles(attacker.x, attacker.y, '#A5D6A7', 6);
-      attacker.smashCooldown = 110;
+      attacker.smashCooldown = 170;
       break;
     }
   }
@@ -1393,7 +1099,7 @@ function updateTennis(attacker, defender) {
     const dmg = 50;
     defender.hp = Math.max(0, defender.hp - dmg);
     defender.hitTimer = 10;
-    attacker.smashCooldown = 110;
+    attacker.smashCooldown = 170;
     const ax = defender.x - attacker.x, ay = defender.y - attacker.y;
     const distAB = Math.hypot(ax, ay) || 1;
     // 強く弾き飛ばす（baseSpdの4倍）
@@ -1401,7 +1107,6 @@ function updateTennis(attacker, defender) {
     defender.vy = (ay / distAB) * defender.baseSpd * 4;
     defender.knockback = 30;
     attacker.swingBaseAngle = attacker.racketAngle; attacker.swingTimer = 18;
-    sfxTennisSmash();
     spawnParticles(defender.x, defender.y, '#A5D6A7', 16);
     spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#A5D6A7');
   }
@@ -1420,7 +1125,11 @@ function updatePingpong(attacker, defender) {
 }
 
 function firePingBall(owner) {
-  const enemy = owner === p1char ? p2char : p1char;
+  // owner === p1char という単純比較だと、トレーナーガイが召喚した卓球ガイ（p1summon）が
+  // 発射した場合に「敵」がp1char（自陣）になってしまうバグがあったため、
+  // チーム判定(getTeamSide)を使って正しい敵を狙うようにする
+  const ownerSide = getTeamSide(owner);
+  const enemy = ownerSide === 'p1' ? p2char : p1char;
   const dx = enemy.x - owner.x, dy = enemy.y - owner.y;
   const d = Math.hypot(dx, dy) || 1;
   const spd = 16.0;
@@ -1483,6 +1192,9 @@ function updatePingBalls() {
       for (const c of pingTargets) {
         if (c.hp <= 0) continue;
         if (Math.hypot(c.x - b.x, c.y - b.y) >= c.r + b.r) continue;
+        // 味方（同じチーム）にはダメージも打ち返しも発生させない
+        // （トレーナーガイが召喚した卓球ガイのボールが味方に当たってしまうバグの修正）
+        if (getTeamSide(c) && getTeamSide(c) === getTeamSide(b.lastHit)) continue;
         // 連続ヒット防止（同じキャラへの連打をクールダウンで防ぐ）
         if (b.hitCooldown > 0 && b.lastHit === c) continue;
         if (b.damageCooldown > 0 && b.lastDamaged === c) continue;
@@ -1520,8 +1232,7 @@ function updatePingBalls() {
             b.spd = retSpd;
             c.racketAngle = Math.atan2(ty, tx);
             c.swingBaseAngle = c.racketAngle; c.swingTimer = 18;
-            c.smashCooldown = 110;
-            sfxRacketSwing();
+            c.smashCooldown = 170;
             spawnParticles(c.x, c.y, '#A5D6A7', 8);
             b.lastHit = c;
             b.hitCooldown = 20;
@@ -1592,7 +1303,6 @@ function updateBomb() {
         bomb.holder = other;
         bomb.passCooldown = BOMB_PASS_COOLDOWN;
         spawnParticles(other.x, other.y, '#FFD54F', 12);
-        sfxBombPass();
         break;
       }
     }
@@ -1602,8 +1312,6 @@ function updateBomb() {
 
   bomb.timer--;
   bomb.blinking = bomb.timer <= BOMB_BLINK_TIME;
-  // 点滅中は0.5秒ごとに警告ビープ
-  if (bomb.blinking && bomb.timer > 0 && bomb.timer % 30 === 0) sfxBombTick();
 
   if (bomb.timer <= 0) {
     // 爆発！保持者のみ大ダメージ（周囲への巻き込みなし）
@@ -1616,7 +1324,6 @@ function updateBomb() {
     spawnParticles(h.x, h.y, '#212121', 18);
     spawnDmg(h.x, h.y - h.r - 12, 1000, '#FF5722');
     dmgTexts.push({ x: h.x, y: h.y - h.r - 40, text: '爆発！', life: 1.3, color: '#FF5722' });
-    sfxBombExplode();
   }
 }
 
@@ -1730,7 +1437,6 @@ function plantLandmine(owner, wallSide) {
   spawnParticles(mx, my, '#8D6E63', 12);
   spawnParticles(mx, my, '#5D4037', 8);
   dmgTexts.push({ x: mx, y: my - owner.r - 30, text: '地雷設置！', life: 1.0, color: '#FF8A65' });
-  sfxMinePlant();
 }
 
 // 毎フレーム、設置済みの地雷と全キャラの接触判定を行う（設置者自身には反応しない）
@@ -1770,7 +1476,6 @@ function explodeLandmine(m, victim) {
   spawnParticles(m.x, m.y, '#3E2723', 16);
   spawnDmg(victim.x, victim.y - victim.r - 12, dmg, '#FF5722');
   dmgTexts.push({ x: m.x, y: m.y - 34, text: '💥爆発!', life: 1.3, color: '#FF7043' });
-  sfxMineExplode();
 }
 
 function drawLandmine(m) {
@@ -1865,7 +1570,6 @@ function fireBullet(owner, dir) {
   owner.gunFireTimer = 10;
   owner.aimDir = dir;
   spawnParticles(owner.x + dir * (owner.r + 6), owner.y, '#FFD54F', 6);
-  sfxGunShot();
 }
 
 // 毎フレーム、発射済みの銃弾の移動・命中判定を行う
@@ -1888,7 +1592,6 @@ function updateBullets() {
       spawnParticles(c.x, c.y, '#FFD54F', 10);
       spawnParticles(c.x, c.y, '#795548', 6);
       spawnDmg(c.x, c.y - c.r - 12, dmg, '#FFD54F');
-      sfxGunHit();
       hit = true;
       break;
     }
@@ -1922,7 +1625,6 @@ function throwEgg(owner, target) {
     vx: (dx / d) * TRAINER_EGG_SPEED, vy: (dy / d) * TRAINER_EGG_SPEED,
     r: 13, owner, trail: []
   });
-  sfxEggThrow();
 }
 
 // 毎フレーム、飛んでいる卵の移動・命中（敵or壁）判定を行う
@@ -1968,7 +1670,6 @@ function updateEggs() {
 function breakEgg(e) {
   spawnParticles(e.x, e.y, '#FFF9C4', 14);
   spawnParticles(e.x, e.y, '#FFE082', 10);
-  sfxEggBreak();
   spawnSummon(e.owner, e.x, e.y);
 }
 
@@ -1991,7 +1692,6 @@ function spawnSummon(owner, x, y) {
   if (owner === p1char) p1summon = s; else p2summon = s;
   spawnParticles(x, y, s.color, 18);
   dmgTexts.push({ x, y: y - s.r - 24, text: `${s.emoji} 誕生！`, life: 1.0, color: '#FFF59D' });
-  sfxSummonPop();
 }
 
 function drawEgg(e) {
@@ -2164,7 +1864,7 @@ function runTimeLoopSimulation(id1, id2) {
         const tx = defender.x-d.x, ty = defender.y-d.y;
         const td = Math.hypot(tx,ty)||1;
         d.vx = (tx/td)*7; d.vy = (ty/td)*7; d.owner = attacker;
-        attacker.smashCooldown = 110; return;
+        attacker.smashCooldown = 170; return;
       }
     }
     // ピンポン打ち返し
@@ -2177,15 +1877,15 @@ function runTimeLoopSimulation(id1, id2) {
         b.vx = (tx/td)*spd; b.vy = (ty/td)*spd;
         b.x = attacker.x+(tx/td)*(attacker.r+b.r);
         b.y = attacker.y+(ty/td)*(attacker.r+b.r);
-        b.owner = attacker; attacker.smashCooldown = 110; return;
+        b.owner = attacker; attacker.smashCooldown = 170; return;
       }
     }
     // 直接打撃
     const dist = Math.hypot(defender.x-attacker.x, defender.y-attacker.y);
     if (defender.hp > 0 && dist < attacker.r + defender.r + 40) {
-      const dmg = 80;
+      const dmg = 50;
       defender.hp = Math.max(0, defender.hp - dmg);
-      defender.hitTimer = 10; attacker.smashCooldown = 110;
+      defender.hitTimer = 10; attacker.smashCooldown = 170;
       const ax = defender.x-attacker.x, ay = defender.y-attacker.y;
       const dAB = Math.hypot(ax,ay)||1;
       defender.vx = (ax/dAB)*defender.baseSpd*4;
@@ -2596,7 +2296,6 @@ function spawnTTGFutureObj(ttg, enemy, x) {
     spawnImageTimer: 60  // 約3秒間 timetravel.png を表示（60fps想定）
   };
   spawnParticles(fx, fy, '#00BCD4', 30);
-  sfxTTGSpawn();
   return futureObj;
 }
 
@@ -2615,7 +2314,6 @@ function fireAirCannon(shooter, enemy) {
     r: 13, owner: shooter,
     trail: [], age: 0, maxAge: 85
   });
-  sfxAirShoot();
   spawnParticles(shooter.x, shooter.y, '#00E5FF', 5);
 }
 
@@ -2728,7 +2426,6 @@ function updateAirBulletsSide(targetChar) {
       const ny = (targetChar.y - b.y) / (Math.hypot(targetChar.x - b.x, targetChar.y - b.y) || 1);
       targetChar.vx = nx * 4; targetChar.vy = ny * 4;
       targetChar.knockback = 15;
-      sfxAirHit();
       spawnParticles(targetChar.x, targetChar.y, '#00E5FF', 10);
       spawnParticles(targetChar.x, targetChar.y, '#80DEEA', 6);
       spawnDmg(targetChar.x, targetChar.y - targetChar.r - 12, dmg, '#00E5FF');
@@ -2787,7 +2484,6 @@ function updateAirBullets(defaultEnemy) {
       const ny = (enemy.y - b.y) / (Math.hypot(enemy.x - b.x, enemy.y - b.y) || 1);
       enemy.vx = nx * 4; enemy.vy = ny * 4;
       enemy.knockback = 15;
-      sfxAirHit();
       spawnParticles(enemy.x, enemy.y, '#00E5FF', 10);
       spawnParticles(enemy.x, enemy.y, '#80DEEA', 6);
       spawnDmg(enemy.x, enemy.y - enemy.r - 12, dmg, '#00E5FF');
@@ -3028,7 +2724,7 @@ function drawChar(c, enemy) {
       ctx.globalAlpha = 1;
     }
   }
-  // 絵文字 or 画像（ボクシングガイは背景除去画像）
+  // 絵文字 or 画像
   ctx.globalAlpha = dead ? 0.25 : 1;
   if (c.type === 'boxing' && BOXER_IMG.complete && BOXER_IMG.naturalWidth > 0) {
     // パンチ中（攻撃直後）はパンチ画像、それ以外は通常画像
@@ -3122,18 +2818,27 @@ function drawChar(c, enemy) {
     if (img) {
       const imgW = img.naturalWidth;
       const imgH = img.naturalHeight;
-      // ショット画像は腕を広げて横に大きいため、幅基準だと縮んで見えてしまう。
-      // 高さ基準でスケールすることで、体の大きさは通常時と揃えつつ腕は外側にはみ出させる。
-      const sizeBoost = isShot ? 1.25 : 1;
-      const scaleBasis = isShot ? imgH : Math.max(imgW, imgH);
-      const scale = (c.r * 2.2 * sizeBoost) / scaleBasis;
-      const dw = imgW * scale;
-      const dh = imgH * scale;
       const flipX = enemy && enemy.x < c.x;
       ctx.save();
       ctx.translate(c.x, c.y);
       if (flipX) ctx.scale(-1, 1);
-      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      if (isShot) {
+        // ショット画像（腕を広げて横に大きい）は高さ基準でスケールして体の大きさを保つ
+        const sizeBoost = 1.15;
+        const scale = (c.r * 2.2 * sizeBoost) / imgH;
+        const dw = imgW * scale, dh = imgH * scale;
+        ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      } else {
+        // 通常画像はラケットを持つ腕を伸ばしたポーズで画像全体が縦長になっているため、
+        // 画像全体ではなく胴体（頭〜腰）の実サイズを基準にスケールし、
+        // 胴体の中心がキャラの位置(c.x, c.y)に来るよう描画位置をオフセットする
+        const sizeBoost = 0.95;
+        const scale = (c.r * 2.2 * sizeBoost) / TENNIS_BODY_H;
+        const dw = imgW * scale, dh = imgH * scale;
+        const offsetX = -TENNIS_BODY_CX * scale;
+        const offsetY = -TENNIS_BODY_CY * scale;
+        ctx.drawImage(img, offsetX, offsetY, dw, dh);
+      }
       ctx.restore();
     }
   } else if (c.type !== 'boxing' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'darts') {
@@ -3151,7 +2856,9 @@ function drawChar(c, enemy) {
         c._flashCanvas = document.createElement('canvas');
         c._flashCtx = c._flashCanvas.getContext('2d');
       }
-      const fw = Math.ceil(c.r * 3.0), fh = Math.ceil(c.r * 3.0);
+      // テニスガイの通常画像はラケットを持つ腕が大きくはみ出すため、フラッシュ用キャンバスを広めに確保する
+      const flashSizeMul = (c.type === 'tennis' && c.smashCooldown <= 0) ? 5.0 : 3.0;
+      const fw = Math.ceil(c.r * flashSizeMul), fh = Math.ceil(c.r * flashSizeMul);
       if (c._flashCanvas.width !== fw || c._flashCanvas.height !== fh) {
         c._flashCanvas.width = fw; c._flashCanvas.height = fh;
       }
@@ -3181,19 +2888,28 @@ function drawChar(c, enemy) {
       } else if (c.type === 'tennis') {
         const isShot = c.smashCooldown > 0 && TennisGuy_shot_IMG.complete && TennisGuy_shot_IMG.naturalWidth > 0;
         img = isShot ? TennisGuy_shot_IMG : TennisGuy_IMG;
-        // ショット画像は腕を広げて横に大きいため、高さ基準でスケールして体の大きさを保つ
-        sizeBoost = isShot ? 1.25 : 1;
-        useHeightBasis = isShot;
         flipX = enemy && enemy.x < c.x;
+        if (isShot) {
+          // ショット画像（高さ基準でスケール）
+          sizeBoost = 1.15;
+          useHeightBasis = true;
+        } else {
+          // 通常画像は胴体（頭〜腰）の実サイズを基準にスケール・位置調整する
+          sizeBoost = 0.95;
+          useHeightBasis = true;
+        }
       }
       if (img && img.complete && img.naturalWidth > 0) {
         const imgW = img.naturalWidth, imgH = img.naturalHeight;
-        const scaleBasis = useHeightBasis ? imgH : Math.max(imgW, imgH);
+        const isTennisNormal = (c.type === 'tennis') && (img === TennisGuy_IMG);
+        const scaleBasis = isTennisNormal ? TENNIS_BODY_H : (useHeightBasis ? imgH : Math.max(imgW, imgH));
         const scale = (c.r * 2.2 * sizeBoost) / scaleBasis;
         const dw = imgW * scale, dh = imgH * scale;
+        const dx = isTennisNormal ? -TENNIS_BODY_CX * scale : -dw / 2;
+        const dy = isTennisNormal ? -TENNIS_BODY_CY * scale : -dh / 2;
         if (flipX) fctx.scale(-1, 1);
         if (flipY) fctx.scale(1, -1);
-        fctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+        fctx.drawImage(img, dx, dy, dw, dh);
         fctx.globalCompositeOperation = 'source-in';
         fctx.fillStyle = '#ffffff';
         fctx.fillRect(-fw / 2, -fh / 2, fw, fh);
@@ -3451,12 +3167,20 @@ function drawDart(d) {
 }
 
 function draw() {
-  // キャンバスは物理的に大きいが、ゲームロジックはW×H(500×500)の論理座標のまま。
-  // ここで拡大変換をかけることで、キャラ・フィールドの比率を変えずに画面全体を大きく表示する
-  ctx.setTransform(GAME_SCALE, 0, 0, GAME_SCALE, 0, 0);
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = '#1FA5CB'; ctx.fillRect(0, 0, W, H);
+  // 物理キャンバス全体をクリア（カメラがズームしていてもフィールド外に隙間ができないように）
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#1FA5CB'; ctx.fillRect(0, 0, canvas.width, canvas.height);
   if (!p1char || !p2char) return;
+
+  // キャンバスは物理的に大きいが、ゲームロジックはW×H(500×500)の論理座標のまま。
+  // GAME_SCALEで画面全体を拡大しつつ、追尾カメラ(camX, camY, camZoom)で
+  // 被写体を中心に捉えるようさらにズーム・パンする
+  ctx.setTransform(
+    GAME_SCALE * camZoom, 0, 0, GAME_SCALE * camZoom,
+    canvas.width / 2 - camX * GAME_SCALE * camZoom,
+    canvas.height / 2 - camY * GAME_SCALE * camZoom
+  );
   for (const p of particles) {
     ctx.beginPath(); ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
     ctx.fillStyle = p.color + Math.round(p.life * 160).toString(16).padStart(2, '0');
@@ -3500,8 +3224,6 @@ const hpBadgeEls = new Map(); // character object -> DOM要素
 
 function renderHpBadges(chars) {
   if (!hpBadgesEl) return;
-  const rectScale = (canvas.clientWidth || canvas.width) / W / GAME_SCALE; // 通常は1
-  const scale = GAME_SCALE * rectScale; // 論理px -> 画面px
 
   const seen = new Set();
   for (const c of chars) {
@@ -3510,9 +3232,11 @@ function renderHpBadges(chars) {
     const s = S / 3;
     const cx = c.x;
     const cy = c.y - c.r - 6 - S / 2; // キャラの頭上。画面外(負の値)になっても構わない＝飛び出す
-    const left = (cx - S / 2) * scale;
-    const top = (cy - S / 2) * scale;
-    const size = S * scale;
+    // カメラのズーム・パンを反映した画面座標に変換
+    const topLeft = worldToScreen(cx - S / 2, cy - S / 2);
+    const left = topLeft.x;
+    const top = topLeft.y;
+    const size = S * topLeft.scale;
     const pct = Math.max(0, Math.min(1, c.hp / c.maxHp));
     const critical = pct <= 0.3;
     const lostH = 3 * (1 - pct); // viewBox 0-3 の座標系での「欠損」高さ
@@ -3638,10 +3362,14 @@ function resultLoop() {
     }
   }
 
+  // カメラ更新（勝者を追尾）
+  updateCamera();
+
   // 通常描画（キャラ・エフェクト含む）
   draw();
 
-  // 結果オーバーレイを重ねて描く
+  // 結果オーバーレイは追尾カメラの影響を受けない固定座標系で重ねて描く
+  ctx.setTransform(GAME_SCALE, 0, 0, GAME_SCALE, 0, 0);
   const winText = `${resultWinner.emoji} ${resultWinner.name} の勝ち！`;
   ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = '#FAC775'; ctx.font = 'bold 26px sans-serif';
@@ -3817,7 +3545,6 @@ function loop() {
     if (ttg.timeLoopX !== null && ttg.hp <= ttg.timeLoopX) {
       spawnParticles(ttg.x, ttg.y, '#00E5FF', 40);
       spawnParticles(ttg.x, ttg.y, '#ffffff', 20);
-      sfxTimeTravel();
       spawnTimeTravelEffect(ttg.x, ttg.y);
       ttg.hp = 0;
       ttg.timeLoopX = null;
@@ -3899,6 +3626,7 @@ function loop() {
     if (timeTravelEffects[i].life <= 0) timeTravelEffects.splice(i, 1);
   }
 
+  updateCamera();
   draw();
   checkWin();
   if (running) animId = requestAnimationFrame(loop);
@@ -3908,7 +3636,7 @@ function loop() {
 // 初期化
 // ============================================================
 
-// Boxing Guy 画像（背景除去済みPNG）
+// Boxing Guy 画像
 const BOXER_IMG = new Image();
 BOXER_IMG.src = "boxer.png"
 const BOXER_PUNCH_IMG = new Image();
@@ -3931,6 +3659,12 @@ const pingpongGuy_shot_IMG = new Image();
 pingpongGuy_shot_IMG.src = "pingpongGuy_shot.png"
 const TennisGuy_IMG = new Image();
 TennisGuy_IMG.src = "TennisGuy.png"
+// TennisGuy.png はラケットを持つ腕を大きく伸ばしたポーズのため、画像全体（腕・ラケット込み）を
+// 基準にスケールすると体が小さく見えてしまう。頭〜腰までの実際の胴体部分の
+// サイズ・中心座標（元画像ピクセル座標）をあらかじめ計測しておき、そこを基準に表示する。
+const TENNIS_BODY_CX = 325;   // 胴体の中心X（画像ピクセル座標）
+const TENNIS_BODY_CY = 436;   // 胴体の中心Y（画像ピクセル座標）
+const TENNIS_BODY_H = 428;    // 胴体（頭上〜裾）の高さ（画像ピクセル）
 const TennisGuy_shot_IMG = new Image();
 TennisGuy_shot_IMG.src = "TennisGuy_shot.png"
 buildCharSelect();
