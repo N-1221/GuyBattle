@@ -6,16 +6,17 @@
 <title>Bouncing Battle Sim</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; display: flex; justify-content: center; padding: 16px; min-height: 100vh; }
+html { overflow-x: hidden; }
+body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; display: flex; justify-content: center; padding: 16px; min-height: 100vh; overflow-x: hidden; }
 #app { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; max-width: 700px; }
 
 /* キャラ選択 */
 #char-select { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; }
 #char-select h2 { font-size: 16px; font-weight: 600; color: #eee; }
-.cs-row { display: flex; gap: 24px; align-items: flex-start; }
-.cs-panel { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.cs-row { display: flex; gap: 24px; align-items: flex-start; max-width: 100%; }
+.cs-panel { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0; }
 .cs-label { font-size: 12px; color: #aaa; font-weight: 500; }
-.cs-cards { display: flex; flex-direction: column; gap: 6px; }
+.cs-cards { display: flex; flex-direction: column; gap: 6px; width: 100%; }
 .cs-card { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: 10px; border: 1.5px solid #444; background: #2a2a2a; cursor: pointer; font-size: 13px; color: #eee; transition: border-color 0.15s, background 0.15s; min-width: 150px; }
 .cs-card:hover { background: #333; }
 .cs-card.selected { border-color: #4A9EFF; background: rgba(74,158,255,0.15); }
@@ -29,20 +30,36 @@ body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; dis
 /* バトル画面 */
 #battle { display: none; flex-direction: column; align-items: center; gap: 0; width: 100%; }
 #scoreboard { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 650px; max-width: 100%; box-sizing: border-box; background: #1FA5CB; color: #fff; padding: 16px 18px 10px; }
-.sb-title { text-align: center; font-size: 30px; font-weight: 900; letter-spacing: 0.3px; line-height: 1.2; font-family: 'Arial Black', 'Hiragino Sans', system-ui, sans-serif; color: #fff; text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 3px 3px 0 #000, 0 4px 8px rgba(0,0,0,0.35); }
+.sb-title { text-align: center; font-size: clamp(18px, 6.5vw, 30px); font-weight: 900; letter-spacing: 0.3px; line-height: 1.2; font-family: 'Arial Black', 'Hiragino Sans', system-ui, sans-serif; color: #fff; text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 3px 3px 0 #000, 0 4px 8px rgba(0,0,0,0.35); }
 .sb-vs { font-weight: 900; }
 .sb-sub { display: flex; align-items: center; gap: 14px; font-size: 12px; color: #eafcff; margin-top: 6px; }
 .s-box { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .s-num { font-size: 15px; font-weight: 700; color: #fff; min-width: 18px; text-align: center; }
 #msg { font-size: 12px; color: #eafcff; }
-canvas { border: 8px solid #000; border-radius: 0; display: block; background: #1FA5CB; }
-#arena-wrap { position: relative; }
+/* canvasは実サイズ(650x650)固定ではなく、画面幅に合わせて縮小表示する（内部の描画座標系はJS側でclientWidthとの比率から自動調整される） */
+canvas { border: 8px solid #000; border-radius: 0; display: block; background: #1FA5CB; max-width: 100%; height: auto; }
+#arena-wrap { position: relative; max-width: 100%; }
 #hp-badges { position: absolute; left: 8px; top: 8px; right: 8px; bottom: 8px; overflow: visible; pointer-events: none; z-index: 999; }
 .hp-badge { position: absolute; overflow: visible; }
 .hp-badge svg { display: block; overflow: visible; }
 #ctrl { display: flex; gap: 8px; margin-top: 14px; }
 #ctrl button { font-size: 13px; padding: 6px 18px; border-radius: 8px; border: 1px solid #444; background: #2a2a2a; color: #eee; cursor: pointer; }
 #ctrl button:hover { background: #333; }
+
+/* スマホなど狭い画面向けの調整 */
+@media (max-width: 460px) {
+  body { padding: 10px; }
+  #app { gap: 8px; }
+  /* キャラ選択：左右2列だと窮屈なので縦積みにする */
+  .cs-row { flex-direction: column; align-items: center; gap: 10px; }
+  .cs-vs { padding-top: 0; font-size: 16px; }
+  .cs-card { min-width: 0; width: 220px; }
+  #scoreboard { padding: 10px 10px 8px; }
+  .sb-sub { gap: 8px; font-size: 11px; }
+  #ctrl { margin-top: 10px; }
+  #ctrl button { font-size: 12px; padding: 6px 14px; }
+}
+
 </style>
 </head>
 <body>
@@ -186,7 +203,7 @@ function playBallHitSound(vol = 0.5) {
 const BOXING_BELL_SOUND_SRC = "試合終了のゴング.mp3";
 function playBoxingBell() {
   const a = new Audio(BOXING_BELL_SOUND_SRC);
-  a.volume = 0.35;
+  a.volume = 0.25;
   a.play().catch(() => {});
 }
 
@@ -198,7 +215,7 @@ function playBoxingBell() {
 const PUNCH_SOUND_SRC = "中パンチ.mp3";
 function sfxPunch() {
   const a = new Audio(PUNCH_SOUND_SRC);
-  a.volume = 0.6 * SFX_MASTER_VOLUME;
+  a.volume = 0.45 * SFX_MASTER_VOLUME;
   a.play().catch(() => {});
 }
 
@@ -220,6 +237,14 @@ function sfxPingHit() {
 // 🏓 ピンポンガイの打ち返し：「コンッ」（ラケット風・少し硬め）
 function sfxPingReturn() {
   playBallHitSound(0.45);
+}
+
+// 🎾 テニスガイ攻撃音（mp3）
+const TENNIS_HIT_SOUND_SRC = "テニス.mp3";
+function sfxTennisHit() {
+  const a = new Audio(TENNIS_HIT_SOUND_SRC);
+  a.volume = 0.6 * SFX_MASTER_VOLUME;
+  a.play().catch(() => {});
 }
 
 // 勝利ファンファーレ（ボクシングの鐘）
@@ -244,7 +269,7 @@ let ttgFuture2 = null; // タイムトラベラーガイ（未来）P2側（TTG 
 let sausages = []; // ツインズガイのソーセージ弾
 let p1twinB = null, p2twinB = null; // ツインズ側の双子B（p1char/p2charはA）
 let bomb = null; // 爆弾ガイの爆弾の状態（持ち主・タイマー・点滅など）
-const BOMB_TIME_LIMIT = 20 * 60;   // 制限時間20秒（60fps想定）
+const BOMB_TIME_LIMIT = 30 * 60;   // 制限時間30秒（60fps想定）
 const BOMB_BLINK_TIME = 3 * 60;    // 残り3秒から点滅警告
 const BOMB_PASS_COOLDOWN = 20;     // 受け渡し直後の連続受け渡し防止フレーム数
 let landmines = []; // 地雷ガイが設置した地雷の配列
@@ -349,7 +374,7 @@ const ROSTER = [
   {
     id: 'bomb',
     name: 'Bomb Guy', emoji: '💣',
-    desc: '20秒の時限爆弾を持ち運ぶ！触れた相手に押し付けて爆発に巻き込め',
+    desc: '30秒の時限爆弾を持ち運ぶ！触れた相手に押し付けて爆発に巻き込め',
     color: '#424242', lightColor: '#FF8A65',
     makeChar(side) {
       const s = rnd(2.2, 3.2); const v = randVel(s);
@@ -494,7 +519,7 @@ const ROSTER = [
   {
     id: 'changeguy',
     name: 'Changing Guy', emoji: '🔄',
-    desc: '壁に反射するたびに、ランダムに別のガイへ変身する！',
+    desc: 'HPが200減るごとに、ランダムに別のガイへ変身する！',
     color: '#FFC107', lightColor: '#FFE082',
     makeChar(side) {
       const s = rnd(2.2, 3.2); const v = randVel(s);
@@ -508,10 +533,55 @@ const ROSTER = [
         name: 'Changing Guy', emoji: '🔄',
         color: '#FFC107', lightColor: '#FFE082',
         type: 'changeguy',
-        isChangeGuy: true, form: null
+        isChangeGuy: true, form: null, hpCheckpoint: 1000
       };
       transformChangeGuy(c); // 開始時にランダムな初期フォームを決める
       return c;
+    }
+  },
+  {
+    id: 'football',
+    name: 'Football Guy', emoji: '🏈',
+    desc: 'その場に数秒立ち止まった後、相手めがけて猛チャージ！',
+    color: '#8D6E63', lightColor: '#D7CCC8',
+    makeChar(side) {
+      const s = rnd(2.2, 3.2); const v = randVel(s);
+      return {
+        x: side === 'p1' ? rnd(60, 180) : rnd(W-180, W-60),
+        y: rnd(80, H-80),
+        vx: v.vx, vy: v.vy, baseSpd: s,
+        r: 55, hp: 1000, maxHp: 1000,
+        hitTimer: 0, hitstop: 0, knockback: 0,
+        trail: [],
+        name: 'Football Guy', emoji: '🏈',
+        color: '#8D6E63', lightColor: '#D7CCC8',
+        type: 'football',
+        footballState: 'wander',   // 'wander'（通常移動）→ 'windup'（立ち止まり）→ 'charging'（突進）
+        footballTimer: 0,          // 現在の状態が終わるまでの残りフレーム数
+        footballCooldown: Math.floor(rnd(90, 150)), // 次のwindupが始まるまでの残りフレーム数
+        footballHitDone: false     // 今回の突進で既にヒットしたか
+      };
+    }
+  },
+  {
+    id: 'ghost',
+    name: 'Ghost Guy', emoji: '👻',
+    desc: '敵とぶつかっても弾かれず、そのまま貫通！重なっている間ダメージを与え続ける',
+    color: '#B39DDB', lightColor: '#D1C4E9',
+    makeChar(side) {
+      const s = rnd(2.2, 3.2); const v = randVel(s);
+      return {
+        x: side === 'p1' ? rnd(60, 180) : rnd(W-180, W-60),
+        y: rnd(80, H-80),
+        vx: v.vx, vy: v.vy, baseSpd: s,
+        r: 55, hp: 1000, maxHp: 1000,
+        hitTimer: 0, hitstop: 0, knockback: 0,
+        trail: [],
+        name: 'Ghost Guy', emoji: '👻',
+        color: '#B39DDB', lightColor: '#D1C4E9',
+        type: 'ghost',
+        ghostDamageCooldown: 0 // 重なっている間のダメージtick間隔管理
+      };
     }
   }
 ];
@@ -664,7 +734,7 @@ document.addEventListener('keydown', e => {
 });
 
 // ============================================================
-// Changing Guy：壁バウンドのたびに別のガイへランダム変身する
+// Changing Guy：HPが200減るたびに別のガイへランダム変身する
 // ============================================================
 // 変身先の候補（的やツインズB、爆弾保持者、タイムループなど
 // 専用の共有ステート・セットアップを必要としないキャラのみに限定）
@@ -674,7 +744,7 @@ const CHANGE_GUY_FORMS = ['boxing', 'tennis', 'pingpong', 'gunman', 'landmine'];
 const CHANGE_GUY_KEEP_KEYS = new Set([
   'x', 'y', 'vx', 'vy', 'baseSpd', 'r', 'hp', 'maxHp',
   'trail', 'hitTimer', 'hitstop', 'knockback',
-  'name', 'emoji', 'isChangeGuy', 'form',
+  'name', 'emoji', 'isChangeGuy', 'form', 'hpCheckpoint',
   '_flashCanvas', '_flashCtx'
 ]);
 
@@ -707,6 +777,14 @@ function transformChangeGuy(c) {
 // 物理・攻撃ロジック
 // ============================================================
 function moveChar(c) {
+  // チェンジングガイ：HPが200減るごとに別のガイへ変身する
+  if (c.isChangeGuy && c.hp > 0) {
+    if (c.hpCheckpoint === undefined) c.hpCheckpoint = c.hp;
+    while (c.hpCheckpoint - c.hp >= 200) {
+      transformChangeGuy(c);
+      c.hpCheckpoint -= 200;
+    }
+  }
   if (c.hitstop > 0) { c.hitstop--; return; }
   // 地雷ガイ：クールダウンは動けない間・動ける間を問わず毎フレーム減らす
   if (c.type === 'landmine' && c.mineCooldown > 0) c.mineCooldown--;
@@ -714,11 +792,6 @@ function moveChar(c) {
   if (c.type === 'landmine' && c.wallStopTimer > 0) {
     c.wallStopTimer--;
     if (c.hitTimer > 0) c.hitTimer--;
-    // チェンジングガイ：地雷ガイの姿のときは本家と同じく壁際で停止し、
-    // 停止時間が明けて壁から離れるタイミングで別のガイへ変身する
-    if (c.isChangeGuy && c.wallStopTimer <= 0) {
-      transformChangeGuy(c);
-    }
     return;
   }
   c.trail.push({ x: c.x, y: c.y });
@@ -737,12 +810,9 @@ function moveChar(c) {
     c.mineCooldown = LANDMINE_STOP_TIME + LANDMINE_MINE_COOLDOWN;
     plantLandmine(c, wallSide);
   }
-  // チェンジングガイ：壁に反射するたびに別のガイへランダム変身する
-  // （地雷ガイの姿のときだけは、本家の地雷ガイと同じ壁際停止を優先させるため、
-  //   ここでは変身させず、上の早期リターン側で「壁から離れる瞬間」に変身する）
-  if (c.isChangeGuy && hitWall && c.hp > 0 && c.type !== 'landmine') {
-    transformChangeGuy(c);
-  }
+  // チェンジングガイ：以前は壁に反射するたびに変身していたが、
+  // 現在はHPが200減るごとに変身する仕様に変更したため、ここでは何もしない
+  // （変身処理は moveChar 冒頭のHPチェックで行う）
   if (c.hitTimer > 0) c.hitTimer--;
   if (c.dodgeCooldown > 0) c.dodgeCooldown--;
   // ノックバック中は徐々に減速して元の速度に戻す、それ以外は一定に保つ
@@ -758,6 +828,8 @@ function moveChar(c) {
 }
 
 function resolveCollision(a, b) {
+  // ゴーストガイ：誰とぶつかっても弾かれず、そのまま貫通する（ダメージ処理はupdateGhostで別途行う）
+  if (a.type === 'ghost' || b.type === 'ghost') return;
   const dx = b.x - a.x, dy = b.y - a.y;
   const dist = Math.hypot(dx, dy) || 1;
   const minD = a.r + b.r;
@@ -813,6 +885,107 @@ function spawnParticles(x, y, color, n) {
 }
 function spawnDmg(x, y, dmg, color) {
   dmgTexts.push({ x, y: y - 76, text: `-${dmg}`, life: 1, color });
+}
+
+// ============================================================
+// Football Guy攻撃：数秒立ち止まった後、相手めがけて突進する
+// ============================================================
+const FOOTBALL_WINDUP_TIME = 100;   // 突進前に立ち止まる時間（フレーム数、約1.7秒）
+const FOOTBALL_CHARGE_MAX_TIME = 240; // 突進の最大継続時間（壁に届かなかった場合の保険）
+const FOOTBALL_CHARGE_SPEED_MUL = 7.5; // 突進時の速度倍率（baseSpd比）
+const FOOTBALL_CHARGE_COOLDOWN = 110;  // 突進終了後、次のwindupが始まるまでの時間
+const FOOTBALL_DAMAGE_NEAR = 180;   // 突進開始時、相手がすぐ近くにいた場合のダメージ（至近距離＝最大）
+const FOOTBALL_DAMAGE_FAR = 60;     // 突進開始時、相手が遠くにいた場合のダメージ（遠距離＝最小）
+const FOOTBALL_DAMAGE_FALLOFF_DIST = 450; // このくらい離れていると最小ダメージになる基準距離
+
+// 突進開始位置と相手との距離からダメージを算出（近いほど高く、遠いほど低い）
+function calcFootballDamage(dist) {
+  const t = Math.max(0, Math.min(1, dist / FOOTBALL_DAMAGE_FALLOFF_DIST));
+  return Math.round(FOOTBALL_DAMAGE_NEAR + (FOOTBALL_DAMAGE_FAR - FOOTBALL_DAMAGE_NEAR) * t);
+}
+
+function updateFootball(attacker, defender) {
+  if (attacker.hp <= 0) return;
+  if (attacker.footballState === 'wander') {
+    // 通常移動中：カウントダウンして0になったら立ち止まり(windup)開始
+    if (--attacker.footballCooldown <= 0) {
+      attacker.footballState = 'windup';
+      attacker.footballTimer = FOOTBALL_WINDUP_TIME;
+      attacker.vx = 0; attacker.vy = 0;
+    }
+  } else if (attacker.footballState === 'windup') {
+    // 立ち止まり中：位置を完全に固定する
+    attacker.vx = 0; attacker.vy = 0;
+    if (--attacker.footballTimer <= 0) {
+      // 突進開始：その瞬間の相手の位置へ向けて加速する
+      const dx = defender.x - attacker.x, dy = defender.y - attacker.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const chargeSpd = attacker.baseSpd * FOOTBALL_CHARGE_SPEED_MUL;
+      attacker.vx = (dx / d) * chargeSpd;
+      attacker.vy = (dy / d) * chargeSpd;
+      attacker.footballState = 'charging';
+      attacker.footballTimer = FOOTBALL_CHARGE_MAX_TIME;
+      attacker.footballHitDone = false;
+      attacker.footballChargeStartDist = d; // 突進開始時点の相手との距離（ダメージ計算に使う）
+      spawnParticles(attacker.x, attacker.y, '#8D6E63', 14);
+    }
+  } else if (attacker.footballState === 'charging') {
+    // 突進中：相手に当たったら一度だけダメージ＋ノックバック（突進自体は止めず継続）
+    // ダメージは突進開始時の距離に応じて変動（近距離から突っ込むほど高威力、遠距離だと威力が下がる）
+    if (!attacker.footballHitDone && defender.hp > 0) {
+      const dist = Math.hypot(defender.x - attacker.x, defender.y - attacker.y);
+      if (dist < attacker.r + defender.r) {
+        const dmg = calcFootballDamage(attacker.footballChargeStartDist || 0);
+        defender.hp = Math.max(0, defender.hp - dmg);
+        defender.hitTimer = 12;
+        attacker.footballHitDone = true;
+        const ax = defender.x - attacker.x, ay = defender.y - attacker.y;
+        const dd = Math.hypot(ax, ay) || 1;
+        defender.vx = (ax / dd) * defender.baseSpd * 5;
+        defender.vy = (ay / dd) * defender.baseSpd * 5;
+        defender.knockback = 30;
+        spawnParticles(defender.x, defender.y, '#8D6E63', 18);
+        spawnParticles(defender.x, defender.y, '#ffffff', 8);
+        spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#8D6E63');
+      }
+    }
+    // 壁に到達するまで突進を止めない（moveChar側で座標が壁際にクランプされているかで判定）
+    const atWall = attacker.x <= attacker.r + 0.5 || attacker.x >= W - attacker.r - 0.5 ||
+                   attacker.y <= attacker.r + 0.5 || attacker.y >= H - attacker.r - 0.5;
+    if (atWall || --attacker.footballTimer <= 0) {
+      // 突進終了：通常の徘徊速度に戻し、しばらく経ったらまた立ち止まる
+      attacker.footballState = 'wander';
+      attacker.footballCooldown = FOOTBALL_CHARGE_COOLDOWN;
+      const v = randVel(attacker.baseSpd);
+      attacker.vx = v.vx; attacker.vy = v.vy;
+    }
+  }
+}
+
+// ============================================================
+// Ghost Guy攻撃：敵と重なっても弾かれず貫通し、重なっている間ダメージを与え続ける
+// ============================================================
+const GHOST_DAMAGE = 25;
+const GHOST_DAMAGE_TICK = 12; // ダメージが入る間隔（フレーム数）
+
+function updateGhost(attacker, defender) {
+  if (attacker.hp <= 0 || defender.hp <= 0) return;
+  const dist = Math.hypot(defender.x - attacker.x, defender.y - attacker.y);
+  const overlapping = dist < attacker.r + defender.r;
+  if (overlapping) {
+    if (attacker.ghostDamageCooldown > 0) {
+      attacker.ghostDamageCooldown--;
+    } else {
+      defender.hp = Math.max(0, defender.hp - GHOST_DAMAGE);
+      defender.hitTimer = 6;
+      spawnParticles(defender.x, defender.y, '#B39DDB', 6);
+      spawnDmg(defender.x, defender.y - defender.r - 12, GHOST_DAMAGE, '#B39DDB');
+      attacker.ghostDamageCooldown = GHOST_DAMAGE_TICK;
+    }
+  } else {
+    // 離れたら次に重なった時すぐダメージが入るようクールダウンをリセット
+    attacker.ghostDamageCooldown = 0;
+  }
 }
 
 // Boxing攻撃
@@ -1102,6 +1275,7 @@ function updateTennis(attacker, defender) {
       attacker.swingBaseAngle = attacker.racketAngle; attacker.swingTimer = 18;
       spawnParticles(attacker.x, attacker.y, '#A5D6A7', 6);
       attacker.smashCooldown = 170;
+      sfxTennisHit();
       break;
     }
   }
@@ -1127,6 +1301,7 @@ function updateTennis(attacker, defender) {
     attacker.swingBaseAngle = attacker.racketAngle; attacker.swingTimer = 18;
     spawnParticles(defender.x, defender.y, '#A5D6A7', 16);
     spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#A5D6A7');
+    sfxTennisHit();
   }
 }
 
@@ -2103,7 +2278,7 @@ function runTimeLoopSimulation(id1, id2) {
   }
 
   // Bombシミュレーション（接触で受け渡し、タイマー0で保持者に大ダメージ）
-  const SIM_BOMB_TIME_LIMIT = 20 * 60;
+  const SIM_BOMB_TIME_LIMIT = 30 * 60;
   const SIM_BOMB_PASS_COOLDOWN = 20;
   function simUpdateBomb(bomb, ttg, enemy) {
     if (!bomb || bomb.exploded) return;
@@ -2402,9 +2577,13 @@ function updateTTGFuture(ttgPresent, enemy) {
   if (ttgFuture.airCooldown > 0) {
     ttgFuture.airCooldown--;
   } else if (enemy && enemy.hp > 0) {
-    // 敵の双子Bが生きていればランダムで狙い分ける
+    // 敵の双子B・召喚キャラが生きていればランダムで狙い分ける
     const enemyTwinBf = ownerIsP1f ? p2twinB : p1twinB;
-    const airTarget = (enemyTwinBf && enemyTwinBf.hp > 0 && Math.random() < 0.5) ? enemyTwinBf : enemy;
+    const enemySummonF = ownerIsP1f ? p2summon : p1summon;
+    const altTargetsF = [enemyTwinBf, enemySummonF].filter(t => t && t.hp > 0);
+    const airTarget = (altTargetsF.length > 0 && Math.random() < 0.5)
+      ? altTargetsF[Math.floor(Math.random() * altTargetsF.length)]
+      : enemy;
     fireAirCannon(ttgFuture, airTarget);
     ttgFuture.airCooldown = 120;
   }
@@ -2513,6 +2692,9 @@ function updateAirBullets(defaultEnemy) {
       // ツインズの双子Bも標的に含める
       const defTwinB = (defaultEnemy === p1char) ? p1twinB : (defaultEnemy === p2char ? p2twinB : null);
       if (defTwinB && defTwinB.hp > 0) targets.push(defTwinB);
+      // トレーナーガイの召喚キャラも標的に含める
+      const defSummon = (defaultEnemy === p1char) ? p1summon : (defaultEnemy === p2char ? p2summon : null);
+      if (defSummon && defSummon.hp > 0) targets.push(defSummon);
       // 非TTG側が撃った弾はttgFutureにも当たる
       if (b.owner !== p1char && b.owner !== ttgFuture && ttgFuture && ttgFuture.hp > 0) targets.push(ttgFuture);
     }
@@ -2730,10 +2912,15 @@ function drawChar(c, enemy) {
   }
   // 本体（ボクシング・ダーツガイ・タイムトラベラーガイ・ピンポンガイは画像を使うので円は描かない）
   if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis' && c.type !== 'landmine' && c.type !== 'gunman') {
+    // ゴーストガイ：半透明にして「実体のなさ」を表現する
+    const bodyAlpha = c.type === 'ghost' ? 0.55 : 1;
+    ctx.save();
+    ctx.globalAlpha *= bodyAlpha;
     ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
     ctx.fillStyle = c.hitTimer > 0 ? c.lightColor : c.color;
     ctx.fill();
     if (c.hitTimer > 0) { ctx.strokeStyle = '#FAC775'; ctx.lineWidth = 3; ctx.stroke(); }
+    ctx.restore();
   }
   // 絵文字 or 画像
   ctx.globalAlpha = dead ? 0.25 : 1;
@@ -3406,8 +3593,8 @@ function resultLoop() {
     }
   }
 
-  // カメラ更新（勝者を追尾）
-  updateCamera();
+  // 追尾カメラは一旦無効化（常に固定表示）
+  // updateCamera();
 
   // 通常描画（キャラ・エフェクト含む）
   draw();
@@ -3451,6 +3638,10 @@ function loop() {
   if (p1char.type === 'gunman') updateGunman(p1char, p2char);
   if (p2char.type === 'gunman') updateGunman(p2char, p1char);
   updateBullets();
+  if (p1char.type === 'football') updateFootball(p1char, p2char);
+  if (p2char.type === 'football') updateFootball(p2char, p1char);
+  if (p1char.type === 'ghost') updateGhost(p1char, p2char);
+  if (p2char.type === 'ghost') updateGhost(p2char, p1char);
 
   // トレーナーガイ処理（卵を投げる／卵の飛翔・命中判定）
   if (p1char.type === 'trainer') updateTrainer(p1char, p2char, p1summon);
@@ -3480,6 +3671,13 @@ function loop() {
   } else if (p1summon) {
     // 召喚キャラが力尽きた：スロットを空け、トレーナーガイが再び卵を投げられるようにする
     spawnParticles(p1summon.x, p1summon.y, '#BDBDBD', 14);
+    // 召喚キャラが卓球ガイだった場合、自分が発射した卓球ボールが場に残り続けてしまうバグの修正
+    // （打ち返されてlastHitが変わっていてもorigin基準で判定し、確実に消す）
+    if (p1summon.type === 'pingpong') {
+      for (let i = pingBalls.length - 1; i >= 0; i--) {
+        if (pingBalls[i].origin === p1summon) pingBalls.splice(i, 1);
+      }
+    }
     p1summon = null;
   }
   // 召喚キャラ（p2側）の移動・衝突・攻撃処理
@@ -3500,6 +3698,12 @@ function loop() {
     if (p1char.type === 'gunman') updateGunman(p1char, p2summon);
   } else if (p2summon) {
     spawnParticles(p2summon.x, p2summon.y, '#BDBDBD', 14);
+    // 召喚キャラが卓球ガイだった場合、自分が発射した卓球ボールが場に残り続けてしまうバグの修正
+    if (p2summon.type === 'pingpong') {
+      for (let i = pingBalls.length - 1; i >= 0; i--) {
+        if (pingBalls[i].origin === p2summon) pingBalls.splice(i, 1);
+      }
+    }
     p2summon = null;
   }
 
@@ -3507,7 +3711,8 @@ function loop() {
   if (p1char.type === 'twins' && p1twinB) {
     moveChar(p1twinB);
     resolveCollision(p1char, p1twinB);
-    const enemies = [p2char, p2twinB].filter(Boolean);
+    // トレーナーガイの召喚キャラ（p2summon）も攻撃対象に含める
+    const enemies = [p2char, p2twinB, p2summon].filter(e => e && e.hp > 0);
     updateTwins(p1char, p1twinB, enemies);
     // ボクサー/テニス/ガンマンが双子Bも狙えるように
     if (p2char.type === 'boxing') updateBoxing(p2char, p1twinB);
@@ -3520,7 +3725,8 @@ function loop() {
   if (p2char.type === 'twins' && p2twinB) {
     moveChar(p2twinB);
     resolveCollision(p2char, p2twinB);
-    const enemies = [p1char, p1twinB].filter(Boolean);
+    // トレーナーガイの召喚キャラ（p1summon）も攻撃対象に含める
+    const enemies = [p1char, p1twinB, p1summon].filter(e => e && e.hp > 0);
     updateTwins(p2char, p2twinB, enemies);
     if (p1char.type === 'boxing') updateBoxing(p1char, p2twinB);
     if (p1char.type === 'tennis') updateTennis(p1char, p2twinB);
@@ -3535,8 +3741,9 @@ function loop() {
     const p1friendB = p1char.type === 'twins' ? p1twinB : null;
     const p2friendA = p2char.type === 'twins' ? p2char : null;
     const p2friendB = p2char.type === 'twins' ? p2twinB : null;
-    const p1enemies = [p2char, p2twinB].filter(e => e && e.hp > 0);
-    const p2enemies = [p1char, p1twinB].filter(e => e && e.hp > 0);
+    // トレーナーガイの召喚キャラもソーセージの命中対象に含める
+    const p1enemies = [p2char, p2twinB, p2summon].filter(e => e && e.hp > 0);
+    const p2enemies = [p1char, p1twinB, p1summon].filter(e => e && e.hp > 0);
     updateSausages(p1friendA, p1friendB, p1enemies, p2enemies, p2friendA, p2friendB);
   }
 
@@ -3582,9 +3789,13 @@ function loop() {
     if (!ttg.airCooldown) ttg.airCooldown = 0;
     if (ttg.airCooldown > 0) ttg.airCooldown--;
     else {
-      // 敵の双子Bが生きていればランダムでどちらかを狙う
+      // 敵の双子B・召喚キャラが生きていればランダムでどれかを狙う
       const enemyTwinB = (ttgEnemy === p2char) ? p2twinB : (ttgEnemy === p1char ? p1twinB : null);
-      const airTarget = (enemyTwinB && enemyTwinB.hp > 0 && Math.random() < 0.5) ? enemyTwinB : ttgEnemy;
+      const enemySummon = (ttgEnemy === p2char) ? p2summon : (ttgEnemy === p1char ? p1summon : null);
+      const altTargets = [enemyTwinB, enemySummon].filter(t => t && t.hp > 0);
+      const airTarget = (altTargets.length > 0 && Math.random() < 0.5)
+        ? altTargets[Math.floor(Math.random() * altTargets.length)]
+        : ttgEnemy;
       if (airTarget && airTarget.hp > 0) {
         fireAirCannon(ttg, airTarget);
         ttg.airCooldown = 120;
@@ -3675,7 +3886,8 @@ function loop() {
     if (timeTravelEffects[i].life <= 0) timeTravelEffects.splice(i, 1);
   }
 
-  updateCamera();
+  // 追尾カメラは一旦無効化（常に固定表示）
+  // updateCamera();
   draw();
   checkWin();
   if (running) animId = requestAnimationFrame(loop);
