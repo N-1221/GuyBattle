@@ -58,6 +58,20 @@ canvas { border: 8px solid #000; border-radius: 0; display: block; background: #
   .sb-sub { gap: 8px; font-size: 11px; }
   #ctrl { margin-top: 10px; }
   #ctrl button { font-size: 12px; padding: 6px 14px; }
+  /* 対戦開始ボタン：カードが縦積みで長くなるとページ最下部まで埋もれて押しづらいため、
+     画面下部に固定表示して常にワンタップで押せるようにする */
+  #char-select { padding-bottom: 72px; }
+  #cs-start {
+    position: fixed;
+    left: 16px;
+    right: 16px;
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    width: auto;
+    padding: 12px 24px;
+    font-size: 15px;
+    z-index: 1000;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  }
 }
 
 </style>
@@ -1355,7 +1369,7 @@ function updateTennis(attacker, defender) {
       d.owner = attacker;
       attacker.swingBaseAngle = attacker.racketAngle; attacker.swingTimer = 18;
       spawnParticles(attacker.x, attacker.y, '#A5D6A7', 6);
-      attacker.smashCooldown = 140;
+      attacker.smashCooldown = 115;
       sfxTennisHit();
       break;
     }
@@ -1363,13 +1377,37 @@ function updateTennis(attacker, defender) {
 
   // (テニスガイのピンポン球打ち返し処理は削除：pingpongガイ側で自動打ち返し済み)
 
+  // 敵のソーセージ（ツインズガイ）を打ち返す
+  for (let i = sausages.length - 1; i >= 0; i--) {
+    const s = sausages[i];
+    const attackerSide = getTeamSide(attacker);
+    if (s.side && s.side === attackerSide) continue; // 自陣のソーセージは打ち返さない
+    const dist = Math.hypot(attacker.x - s.x, attacker.y - s.y);
+    if (dist < attacker.r + s.r + 40) {
+      // 敵に向けて打ち返す（以後は打ち返した側のソーセージとして扱う）
+      const tx = defender.x - s.x, ty = defender.y - s.y;
+      const td = Math.hypot(tx, ty) || 1;
+      const spd = Math.hypot(s.vx, s.vy) || 7;
+      s.vx = (tx / td) * spd;
+      s.vy = (ty / td) * spd;
+      s.owner = attacker;
+      s.side = attackerSide;
+      s.age = 0; // 打ち返した分、少し延命させる
+      attacker.swingBaseAngle = attacker.racketAngle; attacker.swingTimer = 18;
+      spawnParticles(attacker.x, attacker.y, '#A5D6A7', 6);
+      attacker.smashCooldown = 115;
+      sfxTennisHit();
+      break;
+    }
+  }
+
   // 直接打撃（打ち返す）- ラケットリーチ込み
   const REACH = 40;
   const dist = Math.hypot(defender.x - attacker.x, defender.y - attacker.y);
   // ラケットの向きを敵方向へ更新
   attacker.racketAngle = Math.atan2(defender.y - attacker.y, defender.x - attacker.x);
   if (defender.hp > 0 && dist < attacker.r + defender.r + REACH && !isFootballInvulnerable(defender)) {
-    attacker.smashCooldown = 140;
+    attacker.smashCooldown = 115;
     attacker.swingBaseAngle = attacker.racketAngle; attacker.swingTimer = 18;
     if (tryBoxerDodge(defender, attacker.x, attacker.y)) {
       // 回避成功：ダメージなし
@@ -1521,7 +1559,7 @@ function updatePingBalls() {
             b.spd = retSpd;
             c.racketAngle = Math.atan2(ty, tx);
             c.swingBaseAngle = c.racketAngle; c.swingTimer = 18;
-            c.smashCooldown = 140;
+            c.smashCooldown = 115;
             spawnParticles(c.x, c.y, '#A5D6A7', 8);
             b.lastHit = c;
             b.hitCooldown = 20;
@@ -2153,7 +2191,7 @@ function runTimeLoopSimulation(id1, id2) {
         const tx = defender.x-d.x, ty = defender.y-d.y;
         const td = Math.hypot(tx,ty)||1;
         d.vx = (tx/td)*7; d.vy = (ty/td)*7; d.owner = attacker;
-        attacker.smashCooldown = 140; return;
+        attacker.smashCooldown = 115; return;
       }
     }
     // ピンポン打ち返し
@@ -2166,7 +2204,7 @@ function runTimeLoopSimulation(id1, id2) {
         b.vx = (tx/td)*spd; b.vy = (ty/td)*spd;
         b.x = attacker.x+(tx/td)*(attacker.r+b.r);
         b.y = attacker.y+(ty/td)*(attacker.r+b.r);
-        b.owner = attacker; attacker.smashCooldown = 140; return;
+        b.owner = attacker; attacker.smashCooldown = 115; return;
       }
     }
     // 直接打撃
@@ -2174,7 +2212,7 @@ function runTimeLoopSimulation(id1, id2) {
     if (defender.hp > 0 && dist < attacker.r + defender.r + 40) {
       const dmg = 50;
       defender.hp = Math.max(0, defender.hp - dmg);
-      defender.hitTimer = 10; attacker.smashCooldown = 140;
+      defender.hitTimer = 10; attacker.smashCooldown = 115;
       const ax = defender.x-attacker.x, ay = defender.y-attacker.y;
       const dAB = Math.hypot(ax,ay)||1;
       defender.vx = (ax/dAB)*defender.baseSpd*4;
@@ -3350,6 +3388,7 @@ function updateTwins(twinA, twinB, enemies) {
       x: twin.x, y: twin.y,
       vx: dx / d * spd, vy: dy / d * spd,
       r: 12, owner: twin, ownerTeam: twinA, // チーム識別用
+      side: getTeamSide(twin), // どちらの陣営が投げた/最後に打ち返したかを明示的に記録
       age: 0, maxAge: 120,
       trail: []
     });
@@ -3371,8 +3410,8 @@ function updateSausages(p1A, p1B, p1Enemies, p2Enemies, p2A, p2B) {
       sausages.splice(i, 1); continue;
     }
 
-    // オーナーのチームを特定
-    const isP1Team = (s.owner === p1A || s.owner === p1B);
+    // オーナーのチームを特定（打ち返された場合も対応できるよう、記録されたsideを優先して使う）
+    const isP1Team = s.side ? (s.side === 'p1') : (s.owner === p1A || s.owner === p1B);
     const enemies  = isP1Team ? p1Enemies : p2Enemies;
     const friendA  = isP1Team ? p1A : p2A;
     const friendB  = isP1Team ? p1B : p2B;
