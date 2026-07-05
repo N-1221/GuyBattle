@@ -342,7 +342,7 @@ const ROSTER = [
         y: rnd(80, H-80),
         vx: v.vx, vy: v.vy, baseSpd: s,
         r: 55, hp: 1000, maxHp: 1000,
-        smashCooldown: 170, hitTimer: 0, hitstop: 0, knockback: 0, racketAngle: 0, swingTimer: 0, swingBaseAngle: 0,
+        smashCooldown: 0, hitTimer: 0, hitstop: 0, knockback: 0, racketAngle: 0, swingTimer: 0, swingBaseAngle: 0,
         trail: [],
         name: 'Tennis Guy', emoji: '🎾',
         color: '#4CAF50', lightColor: '#A5D6A7',
@@ -541,7 +541,7 @@ const ROSTER = [
   },
   {
     id: 'football',
-    name: 'Football Guy', emoji: '🏈',
+    name: 'Amefot Guy', emoji: '🏈',
     desc: 'その場に数秒立ち止まった後、相手めがけて猛チャージ！',
     color: '#8D6E63', lightColor: '#D7CCC8',
     makeChar(side) {
@@ -553,7 +553,7 @@ const ROSTER = [
         r: 55, hp: 1000, maxHp: 1000,
         hitTimer: 0, hitstop: 0, knockback: 0,
         trail: [],
-        name: 'Football Guy', emoji: '🏈',
+        name: 'Amefot Guy', emoji: '🏈',
         color: '#8D6E63', lightColor: '#D7CCC8',
         type: 'football',
         footballState: 'wander',   // 'wander'（通常移動）→ 'windup'（立ち止まり）→ 'charging'（突進）
@@ -835,15 +835,58 @@ function resolveCollision(a, b) {
   const minD = a.r + b.r;
   if (dist >= minD) return;
   const nx = dx / dist, ny = dy / dist;
-  const overlap = (minD - dist) / 2;
-  a.x -= nx * overlap; a.y -= ny * overlap;
-  b.x += nx * overlap; b.y += ny * overlap;
+  const overlap = minD - dist;
+
+  // 突進中のフットボールガイ：スーパーアーマーで自身は弾かれない（速度・進路を維持する）。
+  // 以前はここで衝突処理自体を丸ごとスキップしていたため、位置の重なりが解消されず
+  // 相手の体を貫通してすり抜けて見えるバグがあった。
+  // → 突進中の本人の位置・速度は動かさず、代わりに相手側だけを重ならない位置まで押し出す。
+  const aInv = isFootballInvulnerable(a);
+  const bInv = isFootballInvulnerable(b);
+  if (aInv && bInv) {
+    // 突進中同士がぶつかる稀なケースは、従来どおりお互い貫通を許容する
+    return;
+  } else if (aInv) {
+    b.x += nx * overlap; b.y += ny * overlap;
+    return;
+  } else if (bInv) {
+    a.x -= nx * overlap; a.y -= ny * overlap;
+    return;
+  }
+
+  a.x -= nx * (overlap / 2); a.y -= ny * (overlap / 2);
+  b.x += nx * (overlap / 2); b.y += ny * (overlap / 2);
   const dvx = b.vx - a.vx, dvy = b.vy - a.vy;
   const dot = dvx * nx + dvy * ny;
   if (dot < 0) {
     a.vx += dot * nx; a.vy += dot * ny;
     b.vx -= dot * nx; b.vy -= dot * ny;
   }
+}
+
+// ============================================================
+// ボクシングガイの回避（ドッジ）共通処理
+// これまでは updateBoxing 内のパンチ判定にしか回避が実装されておらず、
+// フットボールの突進・ダーツ・銃弾・地雷・空気砲・ソーセージなど
+// ボクシング以外の攻撃には一切回避が発生しないバグがあった。
+// ここに共通化し、各攻撃の命中判定の直前で呼び出すことで、
+// ボクサーガイはどんな攻撃に対しても一定確率で回避できるようにする。
+// 回避が成立した場合は true を返すので、呼び出し側はダメージ処理を行わないこと。
+// ============================================================
+function tryBoxerDodge(defender, srcX, srcY) {
+  if (!defender || defender.type !== 'boxing') return false;
+  if (defender.hp <= 0) return false;
+  if (defender.dodgeCooldown > 0) return false;
+  if (Math.random() >= 0.18) return false;
+  defender.dodgeAnimTimer = 18;
+  defender.dodgeCooldown = 60;
+  const dx = defender.x - srcX, dy = defender.y - srcY;
+  const d = Math.hypot(dx, dy) || 1;
+  defender.vx = (dx / d) * 6;
+  defender.vy = (dy / d) * 6;
+  defender.knockback = 16;
+  dmgTexts.push({ x: defender.x, y: defender.y - defender.r - 24, text: 'DODGE!', life: 1.0, color: '#7CF7FF' });
+  return true;
 }
 
 function moveTarget() {
@@ -863,6 +906,7 @@ function getTeamSide(c) {
   if (c === p1char || c === p1twinB || c === p1summon) return 'p1';
   if (c === p2char || c === p2twinB || c === p2summon) return 'p2';
   if (c.owner) return getTeamSide(c.owner); // TTG未来など、owner経由でチームを辿る
+  if (c.summonOwner) return getTeamSide(c.summonOwner); // 召喚キャラが入れ替わって現在のp1summon/p2summonと一致しなくなった場合の保険
   return null;
 }
 
@@ -892,16 +936,28 @@ function spawnDmg(x, y, dmg, color) {
 // ============================================================
 const FOOTBALL_WINDUP_TIME = 100;   // 突進前に立ち止まる時間（フレーム数、約1.7秒）
 const FOOTBALL_CHARGE_MAX_TIME = 240; // 突進の最大継続時間（壁に届かなかった場合の保険）
-const FOOTBALL_CHARGE_SPEED_MUL = 7.5; // 突進時の速度倍率（baseSpd比）
+const FOOTBALL_CHARGE_SPEED_MUL = 8.5; // 突進時の速度倍率（baseSpd比）※強化前は7.5
 const FOOTBALL_CHARGE_COOLDOWN = 110;  // 突進終了後、次のwindupが始まるまでの時間
-const FOOTBALL_DAMAGE_NEAR = 180;   // 突進開始時、相手がすぐ近くにいた場合のダメージ（至近距離＝最大）
-const FOOTBALL_DAMAGE_FAR = 60;     // 突進開始時、相手が遠くにいた場合のダメージ（遠距離＝最小）
+const FOOTBALL_DAMAGE_NEAR = 200;   // 突進開始時、相手がすぐ近くにいた場合のダメージ（至近距離＝最大）※強化前は180
+const FOOTBALL_DAMAGE_FAR = 75;     // 突進開始時、相手が遠くにいた場合のダメージ（遠距離＝最小）※強化前は60
 const FOOTBALL_DAMAGE_FALLOFF_DIST = 450; // このくらい離れていると最小ダメージになる基準距離
 
 // 突進開始位置と相手との距離からダメージを算出（近いほど高く、遠いほど低い）
 function calcFootballDamage(dist) {
   const t = Math.max(0, Math.min(1, dist / FOOTBALL_DAMAGE_FALLOFF_DIST));
   return Math.round(FOOTBALL_DAMAGE_NEAR + (FOOTBALL_DAMAGE_FAR - FOOTBALL_DAMAGE_NEAR) * t);
+}
+
+// 突進中（charging）のフットボールガイはスーパーアーマー状態とし、
+// 被ダメージ・ノックバックを一切受け付けない（突進の勢いを止めさせない）
+function isFootballInvulnerable(c) {
+  return !!c && c.type === 'football' && c.footballState === 'charging';
+}
+
+// ゴーストガイは実体がないため、パンチや突進など物理的な攻撃を素通りする
+// （ボクシングガイ・フットボールガイの攻撃はダメージ・ノックバックとも無効化）
+function isGhostIntangible(c) {
+  return !!c && c.type === 'ghost';
 }
 
 function updateFootball(attacker, defender) {
@@ -935,18 +991,24 @@ function updateFootball(attacker, defender) {
     if (!attacker.footballHitDone && defender.hp > 0) {
       const dist = Math.hypot(defender.x - attacker.x, defender.y - attacker.y);
       if (dist < attacker.r + defender.r) {
-        const dmg = calcFootballDamage(attacker.footballChargeStartDist || 0);
-        defender.hp = Math.max(0, defender.hp - dmg);
-        defender.hitTimer = 12;
-        attacker.footballHitDone = true;
-        const ax = defender.x - attacker.x, ay = defender.y - attacker.y;
-        const dd = Math.hypot(ax, ay) || 1;
-        defender.vx = (ax / dd) * defender.baseSpd * 5;
-        defender.vy = (ay / dd) * defender.baseSpd * 5;
-        defender.knockback = 30;
-        spawnParticles(defender.x, defender.y, '#8D6E63', 18);
-        spawnParticles(defender.x, defender.y, '#ffffff', 8);
-        spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#8D6E63');
+        attacker.footballHitDone = true; // 回避されても同じ突進で再ヒット判定はしない
+        if (isGhostIntangible(defender)) {
+          // ゴーストガイには当たってもダメージが入らない（貫通する）
+        } else if (tryBoxerDodge(defender, attacker.x, attacker.y)) {
+          // 回避成功：ダメージなし
+        } else {
+          const dmg = calcFootballDamage(attacker.footballChargeStartDist || 0);
+          defender.hp = Math.max(0, defender.hp - dmg);
+          defender.hitTimer = 12;
+          const ax = defender.x - attacker.x, ay = defender.y - attacker.y;
+          const dd = Math.hypot(ax, ay) || 1;
+          defender.vx = (ax / dd) * defender.baseSpd * 5;
+          defender.vy = (ay / dd) * defender.baseSpd * 5;
+          defender.knockback = 30;
+          spawnParticles(defender.x, defender.y, '#8D6E63', 18);
+          spawnParticles(defender.x, defender.y, '#ffffff', 8);
+          spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#8D6E63');
+        }
       }
     }
     // 壁に到達するまで突進を止めない（moveChar側で座標が壁際にクランプされているかで判定）
@@ -965,22 +1027,24 @@ function updateFootball(attacker, defender) {
 // ============================================================
 // Ghost Guy攻撃：敵と重なっても弾かれず貫通し、重なっている間ダメージを与え続ける
 // ============================================================
-const GHOST_DAMAGE = 25;
-const GHOST_DAMAGE_TICK = 12; // ダメージが入る間隔（フレーム数）
+const GHOST_DAMAGE = 15;
+const GHOST_DAMAGE_TICK = 8; // ダメージが入る間隔（フレーム数）
 
 function updateGhost(attacker, defender) {
   if (attacker.hp <= 0 || defender.hp <= 0) return;
   const dist = Math.hypot(defender.x - attacker.x, defender.y - attacker.y);
   const overlapping = dist < attacker.r + defender.r;
-  if (overlapping) {
+  if (overlapping && !isFootballInvulnerable(defender)) {
     if (attacker.ghostDamageCooldown > 0) {
       attacker.ghostDamageCooldown--;
     } else {
-      defender.hp = Math.max(0, defender.hp - GHOST_DAMAGE);
-      defender.hitTimer = 6;
-      spawnParticles(defender.x, defender.y, '#B39DDB', 6);
-      spawnDmg(defender.x, defender.y - defender.r - 12, GHOST_DAMAGE, '#B39DDB');
       attacker.ghostDamageCooldown = GHOST_DAMAGE_TICK;
+      if (!tryBoxerDodge(defender, attacker.x, attacker.y)) {
+        defender.hp = Math.max(0, defender.hp - GHOST_DAMAGE);
+        defender.hitTimer = 6;
+        spawnParticles(defender.x, defender.y, '#B39DDB', 6);
+        spawnDmg(defender.x, defender.y - defender.r - 12, GHOST_DAMAGE, '#B39DDB');
+      }
     }
   } else {
     // 離れたら次に重なった時すぐダメージが入るようクールダウンをリセット
@@ -1006,6 +1070,8 @@ function updateBoxing(attacker, defender) {
   const dy = defender.y - attacker.y;
   const dist = Math.hypot(dx, dy);
   if (dist >= attacker.r + defender.r + 5) return;
+  if (isFootballInvulnerable(defender)) return; // 突進中のフットボールガイにはパンチが当たらない
+  if (isGhostIntangible(defender)) return; // ゴーストガイにはパンチが当たってもダメージが入らない（貫通する）
 
   // アッパーカット判定：攻撃者と守備者がほぼ縦に並んでいて、攻撃者が下にいるときのみ発動
   // 縦成分が横成分より大きい（上下方向に近い）＝真上・真下60°以内
@@ -1017,10 +1083,12 @@ function updateBoxing(attacker, defender) {
   const isBelowAttacker = attacker.y < defender.y && isNearlyVertical;
 
   if (isBelowAttacker) {
-    // 何もしない：ダメージ・アニメーションなし、ただ反発するだけ
+    // 何もしない：ダメージ・アニメーションなし、ただ反発するだけ（ゴーストガイは貫通するので反発しない）
     const ndx = dx / (dist || 1), ndy = dy / (dist || 1);
-    defender.vx = ndx * 4;
-    defender.vy = ndy * 4;
+    if (!isGhostIntangible(defender)) {
+      defender.vx = ndx * 4;
+      defender.vy = ndy * 4;
+    }
     attacker.vx = -ndx * 4;
     attacker.vy = -ndy * 4;
     attacker.punchCooldown = 6; // 連続反発を防ぐ最低限のクールダウン
@@ -1033,11 +1101,13 @@ function updateBoxing(attacker, defender) {
     defender.dodgeCooldown = 60;
     attacker.punchCooldown = isUpperAngle ? 10 : 6;
     attacker.comboCount = 0; // 躱されたら連続パンチは途切れる
-    // 攻撃者から離れる方向へ後退
+    // 攻撃者から離れる方向へ後退（ゴーストガイは貫通するので後退させない）
     const ndx = dx / (dist || 1), ndy = dy / (dist || 1);
-    defender.vx = -ndx * 6;
-    defender.vy = -ndy * 6;
-    defender.knockback = 16;
+    if (!isGhostIntangible(defender)) {
+      defender.vx = -ndx * 6;
+      defender.vy = -ndy * 6;
+      defender.knockback = 16;
+    }
     dmgTexts.push({ x: defender.x, y: defender.y - defender.r - 24, text: 'DODGE!', life: 1.0, color: '#7CF7FF' });
     return;
   }
@@ -1051,9 +1121,11 @@ function updateBoxing(attacker, defender) {
     attacker.punchAnimTimer = 20;
     attacker.upperAnimTimer = 20;
     attacker.comboCount = 0; // アッパーが入ったら連続パンチのコンボはリセット
-    defender.vx = dx / (dist || 1) * 2;
-    defender.vy = -30; // 攻撃者が下から打ち上げる
-    defender.knockback = 45;
+    if (!isGhostIntangible(defender)) {
+      defender.vx = dx / (dist || 1) * 2;
+      defender.vy = -30; // 攻撃者が下から打ち上げる
+      defender.knockback = 45;
+    }
     // 被弾者のみ長めにストップ（攻撃者は動き続ける）
     defender.hitstop = 0;
     spawnParticles(defender.x, defender.y, '#FFD700', 20);
@@ -1077,12 +1149,14 @@ function updateBoxing(attacker, defender) {
       spawnParticles(defender.x, defender.y, '#FAC775', 10);
       spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#FFD700');
       dmgTexts.push({ x: attacker.x, y: attacker.y - attacker.r - 24, life: 1.2, color: '#FFD700' });
-      // 攻撃者から離れる方向へ大きく吹っ飛ばす
+      // 攻撃者から離れる方向へ大きく吹っ飛ばす（ゴーストガイは貫通するので吹き飛ばさない）
       const distAB3 = dist || 1;
-      defender.vx = (dx / distAB3) * 22;
-      defender.vy = (dy / distAB3) * 22 - 6; // 少し浮かせつつ大きく飛ばす
-      defender.knockback = 45;
-      defender.hitstop = 12;
+      if (!isGhostIntangible(defender)) {
+        defender.vx = (dx / distAB3) * 22;
+        defender.vy = (dy / distAB3) * 22 - 6; // 少し浮かせつつ大きく飛ばす
+        defender.knockback = 45;
+        defender.hitstop = 12;
+      }
     } else {
       // 通常パンチ：被弾者だけ止めて連続パンチを可能に
       const dmg = 45;
@@ -1094,11 +1168,13 @@ function updateBoxing(attacker, defender) {
       spawnParticles(defender.x, defender.y, '#FAC775', 12);
       spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#FAC775');
       const distAB = dist || 1;
-      defender.vx = (dx / distAB) * 1.5;  // ノックバック弱め＝その場で止まる
-      defender.vy = (dy / distAB) * 1.5;
-      defender.knockback = 8;
-      // 被弾者のみヒットストップ（攻撃者はCDが空いたら即次の一発）
-      defender.hitstop = 14;
+      if (!isGhostIntangible(defender)) {
+        defender.vx = (dx / distAB) * 1.5;  // ノックバック弱め＝その場で止まる
+        defender.vy = (dy / distAB) * 1.5;
+        defender.knockback = 8;
+      }
+      // 被弾者のみヒットストップ（攻撃者はCDが空いたら即次の一発）ゴーストガイは貫通するので停止させない
+      if (!isGhostIntangible(defender)) defender.hitstop = 14;
     }
   }
 }
@@ -1204,15 +1280,20 @@ function updateDartProjectiles() {
     // TTG未来も命中対象に含める
     const dartTargets = [enemy];
     if (ttgFuture && ttgFuture.hp > 0 && d.owner !== ttgFuture) dartTargets.push(ttgFuture);
+    if (ttgFuture2 && ttgFuture2.hp > 0 && d.owner !== ttgFuture2) dartTargets.push(ttgFuture2);
     let dartHit = false;
     for (const tgt of dartTargets) {
-      if (tgt.hp > 0 && Math.hypot(tgt.x - d.x, tgt.y - d.y) < tgt.r + 7) {
-        const dmgPool = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,24,25,26,27,28,30,32,33,34,36,38,39,40,42,45,48,50];
-        const dmg = d.isBurst ? 50 : dmgPool[Math.floor(Math.random() * dmgPool.length)];
-        tgt.hp = Math.max(0, tgt.hp - dmg);
-        tgt.hitTimer = 10;
-        spawnParticles(tgt.x, tgt.y, '#F0997B', 8);
-        spawnDmg(tgt.x, tgt.y - tgt.r - 12, dmg, '#F09595');
+      if (tgt.hp > 0 && Math.hypot(tgt.x - d.x, tgt.y - d.y) < tgt.r + 7 && !isFootballInvulnerable(tgt)) {
+        if (tryBoxerDodge(tgt, d.x, d.y)) {
+          // 回避成功：ダーツはその場に落ちる（ダメージなし）
+        } else {
+          const dmgPool = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,24,25,26,27,28,30,32,33,34,36,38,39,40,42,45,48,50];
+          const dmg = d.isBurst ? 50 : dmgPool[Math.floor(Math.random() * dmgPool.length)];
+          tgt.hp = Math.max(0, tgt.hp - dmg);
+          tgt.hitTimer = 10;
+          spawnParticles(tgt.x, tgt.y, '#F0997B', 8);
+          spawnDmg(tgt.x, tgt.y - tgt.r - 12, dmg, '#F09595');
+        }
         d.stuck = true; d.stuckTimer = 40; dartHit = true; break;
       }
     }
@@ -1274,7 +1355,7 @@ function updateTennis(attacker, defender) {
       d.owner = attacker;
       attacker.swingBaseAngle = attacker.racketAngle; attacker.swingTimer = 18;
       spawnParticles(attacker.x, attacker.y, '#A5D6A7', 6);
-      attacker.smashCooldown = 170;
+      attacker.smashCooldown = 140;
       sfxTennisHit();
       break;
     }
@@ -1287,21 +1368,25 @@ function updateTennis(attacker, defender) {
   const dist = Math.hypot(defender.x - attacker.x, defender.y - attacker.y);
   // ラケットの向きを敵方向へ更新
   attacker.racketAngle = Math.atan2(defender.y - attacker.y, defender.x - attacker.x);
-  if (defender.hp > 0 && dist < attacker.r + defender.r + REACH) {
-    const dmg = 50;
-    defender.hp = Math.max(0, defender.hp - dmg);
-    defender.hitTimer = 10;
-    attacker.smashCooldown = 170;
-    const ax = defender.x - attacker.x, ay = defender.y - attacker.y;
-    const distAB = Math.hypot(ax, ay) || 1;
-    // 強く弾き飛ばす（baseSpdの4倍）
-    defender.vx = (ax / distAB) * defender.baseSpd * 4;
-    defender.vy = (ay / distAB) * defender.baseSpd * 4;
-    defender.knockback = 30;
+  if (defender.hp > 0 && dist < attacker.r + defender.r + REACH && !isFootballInvulnerable(defender)) {
+    attacker.smashCooldown = 140;
     attacker.swingBaseAngle = attacker.racketAngle; attacker.swingTimer = 18;
-    spawnParticles(defender.x, defender.y, '#A5D6A7', 16);
-    spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#A5D6A7');
-    sfxTennisHit();
+    if (tryBoxerDodge(defender, attacker.x, attacker.y)) {
+      // 回避成功：ダメージなし
+    } else {
+      const dmg = 50;
+      defender.hp = Math.max(0, defender.hp - dmg);
+      defender.hitTimer = 10;
+      const ax = defender.x - attacker.x, ay = defender.y - attacker.y;
+      const distAB = Math.hypot(ax, ay) || 1;
+      // 強く弾き飛ばす（baseSpdの4倍）
+      defender.vx = (ax / distAB) * defender.baseSpd * 4;
+      defender.vy = (ay / distAB) * defender.baseSpd * 4;
+      defender.knockback = 30;
+      spawnParticles(defender.x, defender.y, '#A5D6A7', 16);
+      spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#A5D6A7');
+      sfxTennisHit();
+    }
   }
 }
 
@@ -1361,12 +1446,14 @@ function updatePingBalls() {
     for (let s = 0; s < steps && !hit; s++) {
       b.x += b.vx / steps; b.y += b.vy / steps;
 
-      // 壁反射
-      if (b.x - b.r < 0)  { b.x = b.r;     b.vx =  Math.abs(b.vx); sfxPingWall(); }
-      if (b.x + b.r > W)  { b.x = W - b.r; b.vx = -Math.abs(b.vx); sfxPingWall(); }
-      if (b.y - b.r < 0)  { b.y = b.r;     b.vy =  Math.abs(b.vy); sfxPingWall(); }
-      if (b.y + b.r > H)  { b.y = H - b.r; b.vy = -Math.abs(b.vy); sfxPingWall(); }
-      // 速度を一定に保つ
+      // 壁反射（反射のたびにボールの速度を少しだけ落とす。打ち返し時の速度はここでは変更しない）
+      const WALL_BOUNCE_SLOWDOWN = 0.94; // 反射1回あたりの速度倍率
+      const WALL_BOUNCE_MIN_SPD = 8;     // 減速しすぎて止まらないよう最低速度を確保
+      if (b.x - b.r < 0)  { b.x = b.r;     b.vx =  Math.abs(b.vx); sfxPingWall(); if (b.spd) b.spd = Math.max(WALL_BOUNCE_MIN_SPD, b.spd * WALL_BOUNCE_SLOWDOWN); }
+      if (b.x + b.r > W)  { b.x = W - b.r; b.vx = -Math.abs(b.vx); sfxPingWall(); if (b.spd) b.spd = Math.max(WALL_BOUNCE_MIN_SPD, b.spd * WALL_BOUNCE_SLOWDOWN); }
+      if (b.y - b.r < 0)  { b.y = b.r;     b.vy =  Math.abs(b.vy); sfxPingWall(); if (b.spd) b.spd = Math.max(WALL_BOUNCE_MIN_SPD, b.spd * WALL_BOUNCE_SLOWDOWN); }
+      if (b.y + b.r > H)  { b.y = H - b.r; b.vy = -Math.abs(b.vy); sfxPingWall(); if (b.spd) b.spd = Math.max(WALL_BOUNCE_MIN_SPD, b.spd * WALL_BOUNCE_SLOWDOWN); }
+      // 速度を一定に保つ（打ち返し時はb.spdがその都度設定されるため、ここでは壁反射で減速したb.spdに揃えるだけ）
       const curSpd = Math.hypot(b.vx, b.vy);
       if (curSpd > 0 && b.spd) { b.vx = (b.vx / curSpd) * b.spd; b.vy = (b.vy / curSpd) * b.spd; }
 
@@ -1386,8 +1473,10 @@ function updatePingBalls() {
       if (p1summon && p1summon.hp > 0) pingTargets.push(p1summon);
       if (p2summon && p2summon.hp > 0) pingTargets.push(p2summon);
       if (ttgFuture && ttgFuture.hp > 0) pingTargets.push(ttgFuture);
+      if (ttgFuture2 && ttgFuture2.hp > 0) pingTargets.push(ttgFuture2);
       for (const c of pingTargets) {
         if (c.hp <= 0) continue;
+        if (isFootballInvulnerable(c)) continue; // 突進中のフットボールガイには当たらない
         if (Math.hypot(c.x - b.x, c.y - b.y) >= c.r + b.r) continue;
         // 味方（同じチーム）にはダメージも打ち返しも発生させない
         // （トレーナーガイが召喚した卓球ガイのボールが味方に当たってしまうバグの修正）
@@ -1432,7 +1521,7 @@ function updatePingBalls() {
             b.spd = retSpd;
             c.racketAngle = Math.atan2(ty, tx);
             c.swingBaseAngle = c.racketAngle; c.swingTimer = 18;
-            c.smashCooldown = 170;
+            c.smashCooldown = 140;
             spawnParticles(c.x, c.y, '#A5D6A7', 8);
             b.lastHit = c;
             b.hitCooldown = 20;
@@ -1440,11 +1529,13 @@ function updatePingBalls() {
           } else if (c !== b.lastHit) {
             // c === b.lastHit の場合は「自分が打ち返した球が壁などに跳ねて戻ってきた」だけなので、
             // クールダウン中でもダメージを受けない（自分の球で自爆してしまうバグの修正）
-            c.hp = Math.max(0, c.hp - 50);
-            c.hitTimer = 10;
-            sfxPingHit();
-            spawnParticles(c.x, c.y, '#CE93D8', 10);
-            spawnDmg(c.x, c.y - c.r - 12, 50, '#CE93D8');
+            if (!tryBoxerDodge(c, b.x, b.y)) {
+              c.hp = Math.max(0, c.hp - 50);
+              c.hitTimer = 10;
+              sfxPingHit();
+              spawnParticles(c.x, c.y, '#CE93D8', 10);
+              spawnDmg(c.x, c.y - c.r - 12, 50, '#CE93D8');
+            }
             // 卓球ガイの「自分が打った球かどうか」の判定（lastHit）はここでは更新しない。
             // ここは打ち返しではなく素通しの直撃なので、別カウンタで連続ヒットだけ防ぐ。
             b.lastDamaged = c;
@@ -1534,69 +1625,34 @@ function drawBomb() {
   const h = bomb.holder;
   if (!h || h.hp <= 0) return;
   const bx = h.x;
-  // ダイナマイト棒の中心位置（前より大きくなった分、頭上にしっかり配置）
-  const stickW = 24, stickH = 56, stickRadius = 7;
-  const stickCenterY = h.y - h.r - 46;
-  // 残り3秒からは高速点滅（赤⇔黒）で警告
+  // お腹らへんに時限爆弾画像を配置
+  const by = h.y + h.r * 0.15;
+  // 残り3秒からは高速点滅（赤い光）で警告
   const blinkOn = bomb.blinking && (Math.floor(bomb.timer / 4) % 2 === 0);
 
-  ctx.save();
-  ctx.translate(bx, stickCenterY);
-
-  // 導火線（棒の上端からくるっと伸びる）
-  ctx.strokeStyle = '#6D4C28';
-  ctx.lineWidth = 4;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(0, -stickH / 2);
-  ctx.quadraticCurveTo(12, -stickH / 2 - 16, 4, -stickH / 2 - 28);
-  ctx.stroke();
-  // 火花（点滅中は大きく明るく）
-  const sparkR = blinkOn ? 7 : 4.5;
-  ctx.beginPath();
-  ctx.arc(4, -stickH / 2 - 28, sparkR, 0, Math.PI * 2);
-  ctx.fillStyle = blinkOn ? '#FFF59D' : '#FFA726';
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(4, -stickH / 2 - 28, sparkR * 0.45, 0, Math.PI * 2);
-  ctx.fillStyle = '#FFFFFF';
-  ctx.fill();
-
-  // ダイナマイトの棒本体（角丸の縦長スティック）
-  ctx.beginPath();
-  ctx.moveTo(-stickW / 2 + stickRadius, -stickH / 2);
-  ctx.arcTo(stickW / 2, -stickH / 2, stickW / 2, -stickH / 2 + stickRadius, stickRadius);
-  ctx.arcTo(stickW / 2, stickH / 2, stickW / 2 - stickRadius, stickH / 2, stickRadius);
-  ctx.arcTo(-stickW / 2, stickH / 2, -stickW / 2, stickH / 2 - stickRadius, stickRadius);
-  ctx.arcTo(-stickW / 2, -stickH / 2, -stickW / 2 + stickRadius, -stickH / 2, stickRadius);
-  ctx.closePath();
-  ctx.fillStyle = blinkOn ? '#FF5252' : '#D32F2F';
-  ctx.fill();
-  ctx.strokeStyle = '#6E0000';
-  ctx.lineWidth = 2.5;
-  ctx.stroke();
-
-  // クラフト紙風の帯×2（ダイナマイトらしさを出す）
-  ctx.fillStyle = '#EAD3A0';
-  ctx.fillRect(-stickW / 2, -stickH / 2 + 11, stickW, 9);
-  ctx.fillRect(-stickW / 2, stickH / 2 - 20, stickW, 9);
-  ctx.strokeStyle = '#A9824B';
-  ctx.lineWidth = 1.2;
-  ctx.strokeRect(-stickW / 2, -stickH / 2 + 11, stickW, 9);
-  ctx.strokeRect(-stickW / 2, stickH / 2 - 20, stickW, 9);
-
-  // ハイライト（円柱の質感）
-  ctx.fillStyle = 'rgba(255,255,255,0.3)';
-  ctx.fillRect(-stickW / 2 + 4, -stickH / 2 + 4, 5, stickH - 8);
-
-  ctx.restore();
+  const img = (TimeBomb_IMG.complete && TimeBomb_IMG.naturalWidth > 0) ? TimeBomb_IMG : null;
+  let bombDh = h.r * 1.3; // LCDパネルの位置計算に使うため保持
+  if (img) {
+    const imgW = img.naturalWidth, imgH = img.naturalHeight;
+    const scale = (h.r * 1.3) / Math.max(imgW, imgH);
+    const dw = imgW * scale, dh = imgH * scale;
+    bombDh = dh;
+    ctx.save();
+    ctx.translate(bx, by);
+    if (blinkOn) {
+      ctx.shadowColor = '#FF5252';
+      ctx.shadowBlur = 16;
+    }
+    ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
+  }
 
   // デジタルLCD風タイマー表示（始動前は出さない）
   if (bomb.started) {
     const secsNum = Math.max(0, bomb.timer / 60);
     const secsStr = secsNum.toFixed(2).padStart(5, '0'); // 例: "08.42" / "20.00"
     const panelW = 70, panelH = 26;
-    const panelY = stickCenterY + stickH / 2 + 18;
+    const panelY = by + bombDh / 2 + 18;
     ctx.save();
     ctx.translate(bx, panelY);
     // 筐体（黒いLCDパネル）
@@ -1635,7 +1691,11 @@ function plantLandmine(owner, wallSide) {
   if (wallSide === 'right')  mx = W - mineR;
   if (wallSide === 'top')    my = mineR;
   if (wallSide === 'bottom') my = H - mineR;
-  landmines.push({ x: mx, y: my, r: mineR, owner, armTimer: 18, wallSide });
+  // 設置者が「今」どちらの陣営か（p1/p2）をこの時点で確定して記録しておく。
+  // owner参照だけに頼ると、召喚キャラが後で死んで別の新しい召喚キャラに
+  // 置き換わった際にowner===p1summon等の一致判定が崩れ、味方誤爆の原因になるため。
+  const side = getTeamSide(owner);
+  landmines.push({ x: mx, y: my, r: mineR, owner, side, armTimer: 18, wallSide });
   // 1人が設置できる地雷の上限を超えたら、古いものから消す
   const ownerMines = landmines.filter(m => m.owner === owner);
   while (ownerMines.length > LANDMINE_MAX_PER_OWNER) {
@@ -1657,10 +1717,11 @@ function updateLandmines() {
     const m = landmines[i];
     if (m.armTimer > 0) { m.armTimer--; continue; } // 設置直後の誤爆防止
     let exploded = false;
-    const ownerTeam = getTeamSide(m.owner);
+    const ownerTeam = m.side || getTeamSide(m.owner);
     for (const c of allChars) {
       if (c === m.owner) continue; // 設置した本人には反応しない
       if (ownerTeam && getTeamSide(c) === ownerTeam) continue; // 味方（トレーナーガイ本体や他の召喚キャラなど）にも反応しない
+      if (isFootballInvulnerable(c)) continue; // 突進中のフットボールガイは地雷を踏んでも起爆しない
       const d = Math.hypot(c.x - m.x, c.y - m.y);
       if (d < c.r + m.r) {
         explodeLandmine(m, c);
@@ -1673,6 +1734,13 @@ function updateLandmines() {
 }
 
 function explodeLandmine(m, victim) {
+  spawnParticles(m.x, m.y, '#FF7043', 32);
+  spawnParticles(m.x, m.y, '#FFEB3B', 18);
+  spawnParticles(m.x, m.y, '#3E2723', 16);
+  dmgTexts.push({ x: m.x, y: m.y - 34, text: '💥爆発!', life: 1.3, color: '#FF7043' });
+  if (tryBoxerDodge(victim, m.x, m.y)) {
+    return; // 回避成功：地雷は爆発するがダメージなしで飛び退く
+  }
   const dmg = 180;
   victim.hp = Math.max(0, victim.hp - dmg);
   victim.hitTimer = 22;
@@ -1681,11 +1749,7 @@ function explodeLandmine(m, victim) {
   victim.vx = (dx / d) * 18;
   victim.vy = (dy / d) * 18 - 8; // 少し浮かせて吹き飛ばす
   victim.knockback = 35;
-  spawnParticles(m.x, m.y, '#FF7043', 32);
-  spawnParticles(m.x, m.y, '#FFEB3B', 18);
-  spawnParticles(m.x, m.y, '#3E2723', 16);
   spawnDmg(victim.x, victim.y - victim.r - 12, dmg, '#FF5722');
-  dmgTexts.push({ x: m.x, y: m.y - 34, text: '💥爆発!', life: 1.3, color: '#FF7043' });
 }
 
 function drawLandmine(m) {
@@ -1796,13 +1860,16 @@ function updateBullets() {
     for (const c of allChars) {
       // 発射者本人だけでなく、同じチームの味方にも銃弾は当たらないようにする
       if (getTeamSide(c) && getTeamSide(c) === getTeamSide(b.owner)) continue;
+      if (isFootballInvulnerable(c)) continue; // 突進中のフットボールガイには当たらない
       if (Math.hypot(c.x - b.x, c.y - b.y) >= c.r + b.r) continue;
-      const dmg = 60;
-      c.hp = Math.max(0, c.hp - dmg);
-      c.hitTimer = 12;
-      spawnParticles(c.x, c.y, '#FFD54F', 10);
-      spawnParticles(c.x, c.y, '#795548', 6);
-      spawnDmg(c.x, c.y - c.r - 12, dmg, '#FFD54F');
+      if (!tryBoxerDodge(c, b.x, b.y)) {
+        const dmg = 60;
+        c.hp = Math.max(0, c.hp - dmg);
+        c.hitTimer = 12;
+        spawnParticles(c.x, c.y, '#FFD54F', 10);
+        spawnParticles(c.x, c.y, '#795548', 6);
+        spawnDmg(c.x, c.y - c.r - 12, dmg, '#FFD54F');
+      }
       hit = true;
       break;
     }
@@ -1863,11 +1930,14 @@ function updateEggs() {
     let hit = false;
     for (const c of candidates) {
       if (Math.hypot(c.x - e.x, c.y - e.y) >= c.r + e.r) continue;
-      const dmg = TRAINER_EGG_DAMAGE;
-      c.hp = Math.max(0, c.hp - dmg);
-      c.hitTimer = 10;
-      spawnParticles(c.x, c.y, '#FFF9C4', 6);
-      spawnDmg(c.x, c.y - c.r - 12, dmg, '#FFF9C4');
+      if (isFootballInvulnerable(c)) continue; // 突進中のフットボールガイには当たらない
+      if (!tryBoxerDodge(c, e.x, e.y)) {
+        const dmg = TRAINER_EGG_DAMAGE;
+        c.hp = Math.max(0, c.hp - dmg);
+        c.hitTimer = 10;
+        spawnParticles(c.x, c.y, '#FFF9C4', 6);
+        spawnDmg(c.x, c.y - c.r - 12, dmg, '#FFF9C4');
+      }
       breakEgg(e);
       eggs.splice(i, 1);
       hit = true;
@@ -2083,7 +2153,7 @@ function runTimeLoopSimulation(id1, id2) {
         const tx = defender.x-d.x, ty = defender.y-d.y;
         const td = Math.hypot(tx,ty)||1;
         d.vx = (tx/td)*7; d.vy = (ty/td)*7; d.owner = attacker;
-        attacker.smashCooldown = 170; return;
+        attacker.smashCooldown = 140; return;
       }
     }
     // ピンポン打ち返し
@@ -2096,7 +2166,7 @@ function runTimeLoopSimulation(id1, id2) {
         b.vx = (tx/td)*spd; b.vy = (ty/td)*spd;
         b.x = attacker.x+(tx/td)*(attacker.r+b.r);
         b.y = attacker.y+(ty/td)*(attacker.r+b.r);
-        b.owner = attacker; attacker.smashCooldown = 170; return;
+        b.owner = attacker; attacker.smashCooldown = 140; return;
       }
     }
     // 直接打撃
@@ -2104,7 +2174,7 @@ function runTimeLoopSimulation(id1, id2) {
     if (defender.hp > 0 && dist < attacker.r + defender.r + 40) {
       const dmg = 50;
       defender.hp = Math.max(0, defender.hp - dmg);
-      defender.hitTimer = 10; attacker.smashCooldown = 170;
+      defender.hitTimer = 10; attacker.smashCooldown = 140;
       const ax = defender.x-attacker.x, ay = defender.y-attacker.y;
       const dAB = Math.hypot(ax,ay)||1;
       defender.vx = (ax/dAB)*defender.baseSpd*4;
@@ -2641,17 +2711,19 @@ function updateAirBulletsSide(targetChar) {
     if (b.owner !== p2char && b.owner !== ttgFuture2) continue;
     // この弾は既に updateAirBullets(p2char) で処理済みのためスキップ
     // ここでは p1char を標的にする
-    if (targetChar.hp > 0 && Math.hypot(targetChar.x - b.x, targetChar.y - b.y) < targetChar.r + b.r) {
-      const dmg = 30;
-      targetChar.hp = Math.max(0, targetChar.hp - dmg);
-      targetChar.hitTimer = 10;
-      const nx = (targetChar.x - b.x) / (Math.hypot(targetChar.x - b.x, targetChar.y - b.y) || 1);
-      const ny = (targetChar.y - b.y) / (Math.hypot(targetChar.x - b.x, targetChar.y - b.y) || 1);
-      targetChar.vx = nx * 4; targetChar.vy = ny * 4;
-      targetChar.knockback = 15;
-      spawnParticles(targetChar.x, targetChar.y, '#00E5FF', 10);
-      spawnParticles(targetChar.x, targetChar.y, '#80DEEA', 6);
-      spawnDmg(targetChar.x, targetChar.y - targetChar.r - 12, dmg, '#00E5FF');
+    if (targetChar.hp > 0 && !isFootballInvulnerable(targetChar) && Math.hypot(targetChar.x - b.x, targetChar.y - b.y) < targetChar.r + b.r) {
+      if (!tryBoxerDodge(targetChar, b.x, b.y)) {
+        const dmg = 30;
+        targetChar.hp = Math.max(0, targetChar.hp - dmg);
+        targetChar.hitTimer = 10;
+        const nx = (targetChar.x - b.x) / (Math.hypot(targetChar.x - b.x, targetChar.y - b.y) || 1);
+        const ny = (targetChar.y - b.y) / (Math.hypot(targetChar.x - b.x, targetChar.y - b.y) || 1);
+        targetChar.vx = nx * 4; targetChar.vy = ny * 4;
+        targetChar.knockback = 15;
+        spawnParticles(targetChar.x, targetChar.y, '#00E5FF', 10);
+        spawnParticles(targetChar.x, targetChar.y, '#80DEEA', 6);
+        spawnDmg(targetChar.x, targetChar.y - targetChar.r - 12, dmg, '#00E5FF');
+      }
       airBullets.splice(i, 1); continue;
     }
   }
@@ -2702,17 +2774,20 @@ function updateAirBullets(defaultEnemy) {
     let hit = false;
     for (const enemy of targets) {
       if (!enemy || enemy.hp <= 0) continue;
+      if (isFootballInvulnerable(enemy)) continue; // 突進中のフットボールガイには当たらない
       if (Math.hypot(enemy.x - b.x, enemy.y - b.y) >= enemy.r + b.r) continue;
-      const dmg = 30;
-      enemy.hp = Math.max(0, enemy.hp - dmg);
-      enemy.hitTimer = 10;
-      const nx = (enemy.x - b.x) / (Math.hypot(enemy.x - b.x, enemy.y - b.y) || 1);
-      const ny = (enemy.y - b.y) / (Math.hypot(enemy.x - b.x, enemy.y - b.y) || 1);
-      enemy.vx = nx * 4; enemy.vy = ny * 4;
-      enemy.knockback = 15;
-      spawnParticles(enemy.x, enemy.y, '#00E5FF', 10);
-      spawnParticles(enemy.x, enemy.y, '#80DEEA', 6);
-      spawnDmg(enemy.x, enemy.y - enemy.r - 12, dmg, '#00E5FF');
+      if (!tryBoxerDodge(enemy, b.x, b.y)) {
+        const dmg = 30;
+        enemy.hp = Math.max(0, enemy.hp - dmg);
+        enemy.hitTimer = 10;
+        const nx = (enemy.x - b.x) / (Math.hypot(enemy.x - b.x, enemy.y - b.y) || 1);
+        const ny = (enemy.y - b.y) / (Math.hypot(enemy.x - b.x, enemy.y - b.y) || 1);
+        enemy.vx = nx * 4; enemy.vy = ny * 4;
+        enemy.knockback = 15;
+        spawnParticles(enemy.x, enemy.y, '#00E5FF', 10);
+        spawnParticles(enemy.x, enemy.y, '#80DEEA', 6);
+        spawnDmg(enemy.x, enemy.y - enemy.r - 12, dmg, '#00E5FF');
+      }
       hit = true;
       break;
     }
@@ -2905,17 +2980,14 @@ function drawChar(c, enemy) {
   // トレイル
   for (let i = 0; i < c.trail.length; i++) {
     const a = (i / c.trail.length) * 0.3;
-    if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis' && c.type !== 'landmine' && c.type !== 'gunman') {
+    if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis' && c.type !== 'landmine' && c.type !== 'gunman' && c.type !== 'football' && c.type !== 'ghost' && c.type !== 'bomb') {
       ctx.fillStyle = c.color + Math.round(a * 255).toString(16).padStart(2, '0');
       ctx.fill();
     }
   }
-  // 本体（ボクシング・ダーツガイ・タイムトラベラーガイ・ピンポンガイは画像を使うので円は描かない）
-  if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis' && c.type !== 'landmine' && c.type !== 'gunman') {
-    // ゴーストガイ：半透明にして「実体のなさ」を表現する
-    const bodyAlpha = c.type === 'ghost' ? 0.55 : 1;
+  // 本体（ボクシング・ダーツガイ・タイムトラベラーガイ・ピンポンガイ・フットボールガイ・ゴーストガイ・爆弾ガイは画像を使うので円は描かない）
+  if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis' && c.type !== 'landmine' && c.type !== 'gunman' && c.type !== 'football' && c.type !== 'ghost' && c.type !== 'bomb') {
     ctx.save();
-    ctx.globalAlpha *= bodyAlpha;
     ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
     ctx.fillStyle = c.hitTimer > 0 ? c.lightColor : c.color;
     ctx.fill();
@@ -3080,6 +3152,57 @@ function drawChar(c, enemy) {
       ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
       ctx.restore();
     }
+  } else if (c.type === 'football') {
+    // 突進中（タックル中）はタックル画像、それ以外は通常画像
+    const isTackling = c.footballState === 'charging';
+    const img = (isTackling && AmefotGuy_Tackle_IMG.complete && AmefotGuy_Tackle_IMG.naturalWidth > 0)
+      ? AmefotGuy_Tackle_IMG
+      : (AmefotGuy_IMG.complete && AmefotGuy_IMG.naturalWidth > 0 ? AmefotGuy_IMG : null);
+    if (img) {
+      const imgW = img.naturalWidth;
+      const imgH = img.naturalHeight;
+      const scale = (c.r * 2.2) / Math.max(imgW, imgH);
+      const dw = imgW * scale;
+      const dh = imgH * scale;
+      const flipX = enemy && enemy.x < c.x;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      if (flipX) ctx.scale(-1, 1);
+      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+    }
+  } else if (c.type === 'ghost') {
+    // ゴーストガイ：半透明にして「実体のなさ」を表現する
+    const img = (GhostGuy_IMG.complete && GhostGuy_IMG.naturalWidth > 0) ? GhostGuy_IMG : null;
+    if (img) {
+      const imgW = img.naturalWidth;
+      const imgH = img.naturalHeight;
+      const scale = (c.r * 2.2) / Math.max(imgW, imgH);
+      const dw = imgW * scale;
+      const dh = imgH * scale;
+      const flipX = enemy && enemy.x < c.x;
+      ctx.save();
+      ctx.globalAlpha *= 0.55;
+      ctx.translate(c.x, c.y);
+      if (flipX) ctx.scale(-1, 1);
+      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+    }
+  } else if (c.type === 'bomb') {
+    const img = (BombGuy_IMG.complete && BombGuy_IMG.naturalWidth > 0) ? BombGuy_IMG : null;
+    if (img) {
+      const imgW = img.naturalWidth;
+      const imgH = img.naturalHeight;
+      const scale = (c.r * 2.2) / Math.max(imgW, imgH);
+      const dw = imgW * scale;
+      const dh = imgH * scale;
+      const flipX = enemy && enemy.x < c.x;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      if (flipX) ctx.scale(-1, 1);
+      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+    }
   } else if (c.type !== 'boxing' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'darts' && c.type !== 'landmine' && c.type !== 'gunman') {
     ctx.font = '40px serif';
     ctx.textAlign = 'center';
@@ -3089,7 +3212,7 @@ function drawChar(c, enemy) {
   // ダメージフラッシュ（全キャラ共通：hitTimer中は体を白く塗りつぶす）
   if (c.hitTimer > 0) {
     const flashAlpha = Math.min(1, c.hitTimer / 5);
-    if (c.type === 'boxing' || c.type === 'darts' || c.type === 'timetraveler' || c.type === 'pingpong' || c.type === 'tennis' || c.type === 'landmine' || c.type === 'gunman') {
+    if (c.type === 'boxing' || c.type === 'darts' || c.type === 'timetraveler' || c.type === 'pingpong' || c.type === 'tennis' || c.type === 'landmine' || c.type === 'gunman' || c.type === 'football' || c.type === 'ghost' || c.type === 'bomb') {
       // 画像ベースのキャラ：直前に描画した画像の輪郭（シルエット）に沿って白く塗る
       if (!c._flashCanvas) {
         c._flashCanvas = document.createElement('canvas');
@@ -3142,6 +3265,15 @@ function drawChar(c, enemy) {
         flipX = enemy && enemy.x < c.x;
       } else if (c.type === 'gunman') {
         img = (c.gunFireTimer > 0 && GunmanGuy_shot_IMG.complete && GunmanGuy_shot_IMG.naturalWidth > 0) ? GunmanGuy_shot_IMG : GunmanGuy_IMG;
+        flipX = enemy && enemy.x < c.x;
+      } else if (c.type === 'football') {
+        img = (c.footballState === 'charging' && AmefotGuy_Tackle_IMG.complete && AmefotGuy_Tackle_IMG.naturalWidth > 0) ? AmefotGuy_Tackle_IMG : AmefotGuy_IMG;
+        flipX = enemy && enemy.x < c.x;
+      } else if (c.type === 'ghost') {
+        img = GhostGuy_IMG;
+        flipX = enemy && enemy.x < c.x;
+      } else if (c.type === 'bomb') {
+        img = BombGuy_IMG;
         flipX = enemy && enemy.x < c.x;
       }
       if (img && img.complete && img.naturalWidth > 0) {
@@ -3250,7 +3382,11 @@ function updateSausages(p1A, p1B, p1Enemies, p2Enemies, p2A, p2B) {
     // 敵に命中 → ダメージ
     for (const e of enemies) {
       if (!e || e.hp <= 0) continue;
+      if (isFootballInvulnerable(e)) continue; // 突進中のフットボールガイには当たらない
       if (Math.hypot(e.x - s.x, e.y - s.y) >= e.r + s.r) continue;
+      if (tryBoxerDodge(e, s.x, s.y)) {
+        sausages.splice(i, 1); hit = true; break;
+      }
       const dmg = 60;
       e.hp = Math.max(0, e.hp - dmg);
       e.hitTimer = 12;
@@ -3297,6 +3433,21 @@ function drawSausage(s) {
     ctx.fillStyle = `rgba(160,82,45,${a})`;
     ctx.fill();
   }
+
+  const img = (Sausage_IMG.complete && Sausage_IMG.naturalWidth > 0) ? Sausage_IMG : null;
+  if (img) {
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(angle);
+    const imgW = img.naturalWidth, imgH = img.naturalHeight;
+    // 長さ(s.r*4.4)を基準に画像サイズをスケール
+    const scale = (s.r * 4.4) / Math.max(imgW, imgH);
+    const dw = imgW * scale, dh = imgH * scale;
+    ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
+    return;
+  }
+
   ctx.save();
   ctx.translate(s.x, s.y);
   ctx.rotate(angle);
@@ -3936,6 +4087,18 @@ const GunmanGuy_IMG = new Image();
 GunmanGuy_IMG.src = "GunmanGuy.png"
 const GunmanGuy_shot_IMG = new Image();
 GunmanGuy_shot_IMG.src = "GunmanGuy_shot.png"
+const AmefotGuy_IMG = new Image();
+AmefotGuy_IMG.src = "AmefotGuy.png"
+const AmefotGuy_Tackle_IMG = new Image();
+AmefotGuy_Tackle_IMG.src = "AmefotGuy_Tackle.png"
+const GhostGuy_IMG = new Image();
+GhostGuy_IMG.src = "GhostGuy.png"
+const Sausage_IMG = new Image();
+Sausage_IMG.src = "Sausage.png"
+const TimeBomb_IMG = new Image();
+TimeBomb_IMG.src = "TimeBomb.png"
+const BombGuy_IMG = new Image();
+BombGuy_IMG.src = "BombGuy.png"
 buildCharSelect();
 </script>
 </body>
