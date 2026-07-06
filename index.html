@@ -295,6 +295,7 @@ const LANDMINE_STOP_TIME = 150;    // 壁に激突してから動けるように
 const LANDMINE_MINE_COOLDOWN = 90; // 動けるようになった後、次の地雷を設置できるようになるまでの追加クールダウン（約1.5秒）
 const LANDMINE_MAX_PER_OWNER = 4;  // 1人が同時に設置できる地雷の上限（超えたら古いものから消える）
 let bullets = []; // ガンマンガイの銃弾の配列
+const PINGPONG_BALL_SPEED = 18.0; // 卓球ボールの基本速度 ※少しだけ上方修正（元は16.0）
 let eggs = []; // トレーナーガイの卵の配列
 let p1summon = null, p2summon = null; // トレーナーガイが卵から召喚した仲間キャラ（各サイド1体まで）
 const TRAINER_SUMMON_FORMS = ['boxing', 'tennis', 'pingpong', 'gunman', 'landmine', 'football', 'ghost']; // 卵から出てくる候補（共有ステートを必要としないキャラのみ）
@@ -1479,7 +1480,7 @@ function firePingBall(owner, target) {
   }
   const dx = enemy.x - owner.x, dy = enemy.y - owner.y;
   const d = Math.hypot(dx, dy) || 1;
-  const spd = 16.0;
+  const spd = PINGPONG_BALL_SPEED;
   pingBalls.push({
     x: owner.x, y: owner.y,
     vx: (dx / d) * spd, vy: (dy / d) * spd,
@@ -1580,7 +1581,7 @@ function updatePingBalls() {
             const enemyC = cSide === 'p1' ? p2char : p1char;
             const tx = enemyC.x - b.x, ty = enemyC.y - b.y;
             const td = Math.hypot(tx, ty) || 1;
-            const retSpd = Math.max(b.spd || 16, 16);
+            const retSpd = Math.max(b.spd || PINGPONG_BALL_SPEED, PINGPONG_BALL_SPEED);
             b.vx = (tx / td) * retSpd;
             b.vy = (ty / td) * retSpd;
             b.spd = retSpd;
