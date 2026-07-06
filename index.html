@@ -280,6 +280,10 @@ const TARGET_BURST_TOTAL = 3;     // 放射攻撃の連射回数
 const TARGET_BURST_INTERVAL = 14; // 連射の間隔（フレーム）
 let ttgFuture = null; // タイムトラベラーガイ（未来）
 let ttgFuture2 = null; // タイムトラベラーガイ（未来）P2側（TTG vs TTG 用）
+// 空気砲（タイムトラベラーガイの通常攻撃）※上方修正でダメージ増加・クールタイム短縮
+const AIR_CANNON_DAMAGE = 34;
+const AIR_CANNON_COOLDOWN = 105;
+const AIR_CANNON_SPEED = 7;
 let sausages = []; // ツインズガイのソーセージ弾
 let p1twinB = null, p2twinB = null; // ツインズ側の双子B（p1char/p2charはA）
 let bomb = null; // 爆弾ガイの爆弾の状態（持ち主・タイマー・点滅など）
@@ -293,12 +297,12 @@ const LANDMINE_MAX_PER_OWNER = 4;  // 1人が同時に設置できる地雷の�
 let bullets = []; // ガンマンガイの銃弾の配列
 let eggs = []; // トレーナーガイの卵の配列
 let p1summon = null, p2summon = null; // トレーナーガイが卵から召喚した仲間キャラ（各サイド1体まで）
-const TRAINER_SUMMON_FORMS = ['boxing', 'tennis', 'pingpong', 'gunman', 'landmine']; // 卵から出てくる候補（共有ステートを必要としないキャラのみ）
-const TRAINER_EGG_COOLDOWN = 130;  // 召喚キャラがいない間、次の卵を投げるまでの間隔（フレーム）
+const TRAINER_SUMMON_FORMS = ['boxing', 'tennis', 'pingpong', 'gunman', 'landmine', 'football', 'ghost']; // 卵から出てくる候補（共有ステートを必要としないキャラのみ）
+const TRAINER_EGG_COOLDOWN = 65;   // 召喚キャラがいない間、次の卵を投げるまでの間隔（フレーム）※上方修正で短縮
 const TRAINER_EGG_SPEED = 6.2;     // 卵の飛翔速度
-const TRAINER_EGG_DAMAGE = 26;     // 卵が命中した時のダメージ
-const TRAINER_SUMMON_HP = 320;     // 召喚キャラのHP（本家の1000に対してかなり低い）
-const TRAINER_SUMMON_R_SCALE = 0.75; // 召喚キャラの見た目の大きさ（本家より一回り小さく）
+const TRAINER_EGG_DAMAGE = 38;     // 卵が命中した時のダメージ ※上方修正で増加
+const TRAINER_SUMMON_HP = 550;     // 召喚キャラのHP（本家の1000に対して低め）※上方修正で増加
+const TRAINER_SUMMON_R_SCALE = 0.9; // 召喚キャラの見た目の大きさ（本家より一回り小さく）※上方修正でやや拡大
 
 // ============================================================
 // キャラクター定義
@@ -520,13 +524,13 @@ const ROSTER = [
         x: side === 'p1' ? rnd(60, 180) : rnd(W-180, W-60),
         y: rnd(80, H-80),
         vx: v.vx, vy: v.vy, baseSpd: s,
-        r: 55, hp: 1000, maxHp: 1000,
+        r: 55, hp: 1300, maxHp: 1300,
         hitTimer: 0, hitstop: 0, knockback: 0,
         trail: [],
         name: 'Trainer Guy', emoji: '🧢',
         color: '#FFB300', lightColor: '#FFE082',
         type: 'trainer',
-        eggCooldown: 60 // 開始直後にすぐ卵を投げ始める
+        eggCooldown: 40 // 開始直後にすぐ卵を投げ始める（上方修正で短縮）
       };
     }
   },
@@ -549,7 +553,7 @@ const ROSTER = [
         type: 'changeguy',
         isChangeGuy: true, form: null, hpCheckpoint: 1000
       };
-      transformChangeGuy(c); // 開始時にランダムな初期フォームを決める
+      transformChangeGuy(c, true); // 開始時にランダムな初期フォームを決める（隙は発生させない）
       return c;
     }
   },
@@ -752,7 +756,7 @@ document.addEventListener('keydown', e => {
 // ============================================================
 // 変身先の候補（的やツインズB、爆弾保持者、タイムループなど
 // 専用の共有ステート・セットアップを必要としないキャラのみに限定）
-const CHANGE_GUY_FORMS = ['boxing', 'tennis', 'pingpong', 'gunman', 'landmine'];
+const CHANGE_GUY_FORMS = ['boxing', 'tennis', 'pingpong', 'gunman', 'landmine', 'football', 'ghost'];
 // 変身時も「Changing Guy」としての見た目のアイデンティティ（名前・絵文字）と
 // 座標・速度・HPなど共通ステータスは維持する
 const CHANGE_GUY_KEEP_KEYS = new Set([
@@ -762,7 +766,10 @@ const CHANGE_GUY_KEEP_KEYS = new Set([
   '_flashCanvas', '_flashCtx'
 ]);
 
-function transformChangeGuy(c) {
+// 変身直後に無防備になる時間（フレーム数）。戦闘開始時の初回フォーム決定では発生させない
+const CHANGE_GUY_TRANSFORM_STUN = 40;
+
+function transformChangeGuy(c, isInitial) {
   // 直前と同じフォームには変身しないようにする（毎回ちゃんと「変わった」とわかるように）
   const oldForm = c.form;
   const pool = CHANGE_GUY_FORMS.filter(id => id !== oldForm);
@@ -783,6 +790,9 @@ function transformChangeGuy(c) {
       if (pingBalls[i].origin === c) pingBalls.splice(i, 1);
     }
   }
+  // HPが減って変身した場合のみ、その場に固まって無防備になる隙を発生させる
+  // （戦闘開始時の初回フォーム決定ではノーリスクで即行動できるようにする）
+  if (!isInitial) c.transformStun = CHANGE_GUY_TRANSFORM_STUN;
   spawnParticles(c.x, c.y, '#FFC107', 26);
   spawnParticles(c.x, c.y, '#ffffff', 12);
 }
@@ -798,6 +808,12 @@ function moveChar(c) {
       transformChangeGuy(c);
       c.hpCheckpoint -= 200;
     }
+  }
+  // 変身直後は一定時間、その場に固まって無防備になる（相手に反撃のスキを与える）
+  if (c.transformStun > 0) {
+    c.transformStun--;
+    c.vx = 0; c.vy = 0;
+    return;
   }
   if (c.hitstop > 0) { c.hitstop--; return; }
   // 地雷ガイ：クールダウンは動けない間・動ける間を問わず毎フレーム減らす
@@ -975,7 +991,7 @@ function isGhostIntangible(c) {
 }
 
 function updateFootball(attacker, defender) {
-  if (attacker.hp <= 0) return;
+  if (attacker.hp <= 0 || attacker.transformStun > 0) return;
   if (attacker.footballState === 'wander') {
     // 通常移動中：カウントダウンして0になったら立ち止まり(windup)開始
     if (--attacker.footballCooldown <= 0) {
@@ -1045,7 +1061,7 @@ const GHOST_DAMAGE = 15;
 const GHOST_DAMAGE_TICK = 8; // ダメージが入る間隔（フレーム数）
 
 function updateGhost(attacker, defender) {
-  if (attacker.hp <= 0 || defender.hp <= 0) return;
+  if (attacker.hp <= 0 || defender.hp <= 0 || attacker.transformStun > 0) return;
   const dist = Math.hypot(defender.x - attacker.x, defender.y - attacker.y);
   const overlapping = dist < attacker.r + defender.r;
   if (overlapping && !isFootballInvulnerable(defender)) {
@@ -1068,7 +1084,7 @@ function updateGhost(attacker, defender) {
 
 // Boxing攻撃
 function updateBoxing(attacker, defender) {
-  if (attacker.hp <= 0 || defender.hp <= 0) return;
+  if (attacker.hp <= 0 || defender.hp <= 0 || attacker.transformStun > 0) return;
   // 連続パンチの間隔が空きすぎたらコンボをリセット（チェーンが途切れた場合）
   if (attacker.comboTimer > 0) attacker.comboTimer--;
   else attacker.comboCount = 0;
@@ -1195,7 +1211,7 @@ function updateBoxing(attacker, defender) {
 
 // Darts攻撃
 function updateDarts_shoot(attacker) {
-  if (attacker.hp <= 0) return;
+  if (attacker.hp <= 0 || attacker.transformStun > 0) return;
   if (attacker.dartCooldown > 0) { attacker.dartCooldown--; return; }
   attacker.burstCount = 3;
   attacker.burstInterval = 0;
@@ -1259,8 +1275,18 @@ function updateDartProjectiles() {
     if (target && Math.hypot(target.x - d.x, target.y - d.y) < target.r + 7) {
       // ダーツだけが的にダメージを与える（バーストダーツはダメージ固定50）
       const dmgPool = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,24,25,26,27,28,30,32,33,34,36,38,39,40,42,45,48,50];
-      const dmg = d.isBurst ? 50 : dmgPool[Math.floor(Math.random() * dmgPool.length)];
       const remaining = target.hp;
+      // 的の残りHPがちょうど1のときは「フィニッシュ」を決めやすいよう、
+      // 攻撃力1のダーツを引く確率を通常よりかなり高くする
+      const DART_FINISH_BOOST_CHANCE = 0.5;
+      let dmg;
+      if (d.isBurst) {
+        dmg = 50;
+      } else if (remaining === 1 && Math.random() < DART_FINISH_BOOST_CHANCE) {
+        dmg = 1;
+      } else {
+        dmg = dmgPool[Math.floor(Math.random() * dmgPool.length)];
+      }
       // 本物のダーツ501ルールと同様：残りHPを超過(バースト)する場合はそのダメージはなかったことにする
       if (dmg > remaining) {
         spawnParticles(target.x, target.y, '#999999', 5);
@@ -1351,7 +1377,7 @@ function updateDartProjectiles() {
 // Tennis Guy攻撃
 // ============================================================
 function updateTennis(attacker, defender) {
-  if (attacker.hp <= 0) return;
+  if (attacker.hp <= 0 || attacker.transformStun > 0) return;
   if (attacker.smashCooldown > 0) { attacker.smashCooldown--; return; }
 
   // 敵のダーツを打ち返す
@@ -1432,6 +1458,7 @@ function updateTennis(attacker, defender) {
 // Ping Pong Guy攻撃
 // ============================================================
 function updatePingpong(attacker, defender) {
+  if (attacker.hp <= 0 || attacker.transformStun > 0) return;
   // 初回1秒後に発射
   if (!attacker.ballFired) {
     if (!attacker.ballDelay) attacker.ballDelay = 60;
@@ -1843,7 +1870,7 @@ const GUNMAN_OVERHEAT_TIME = 360;  // 連射後のクールダウン（延長：
 
 // 真横に並んだ瞬間に発砲を開始したら、以降は整列が崩れてもクールダウンに入るまで撃ち続ける
 function updateGunman(attacker, defender) {
-  if (attacker.hp <= 0 || defender.hp <= 0) return;
+  if (attacker.hp <= 0 || defender.hp <= 0 || attacker.transformStun > 0) return;
   if (attacker.overheatCooldown > 0) { attacker.overheatCooldown--; return; }
   if (attacker.gunCooldown > 0) { attacker.gunCooldown--; return; }
 
@@ -1964,7 +1991,9 @@ function updateEggs() {
     // 敵本体・敵の召喚キャラに当たったら割れる（自分の陣営には当たらない）
     const enemy = e.owner === p1char ? p2char : p1char;
     const enemySummon = e.owner === p1char ? p2summon : p1summon;
-    const candidates = [enemy, enemySummon].filter(c => c && c.hp > 0);
+    // TTGの未来クローンも対象に含める（owner側と逆サイドの未来体のみ）
+    const enemyFuture = [ttgFuture, ttgFuture2].filter(f => f && f.hp > 0 && getTeamSide(f) !== getTeamSide(e.owner));
+    const candidates = [enemy, enemySummon, ...enemyFuture].filter(c => c && c.hp > 0);
     let hit = false;
     for (const c of candidates) {
       if (Math.hypot(c.x - e.x, c.y - e.y) >= c.r + e.r) continue;
@@ -2470,7 +2499,7 @@ function runTimeLoopSimulation(id1, id2) {
     const tx = enemy.x + enemy.vx*lead, ty = enemy.y + enemy.vy*lead;
     const dx = tx-shooter.x, dy = ty-shooter.y;
     const d = Math.hypot(dx,dy)||1;
-    simAirBullets.push({ x: shooter.x, y: shooter.y, vx: (dx/d)*7, vy: (dy/d)*7, r: 13, owner: shooter, age: 0, maxAge: 85 });
+    simAirBullets.push({ x: shooter.x, y: shooter.y, vx: (dx/d)*AIR_CANNON_SPEED, vy: (dy/d)*AIR_CANNON_SPEED, r: 13, owner: shooter, age: 0, maxAge: 85 });
   }
   function simUpdateAirBullets(simAirBullets, enemy) {
     for (let i = simAirBullets.length-1; i >= 0; i--) {
@@ -2480,7 +2509,7 @@ function runTimeLoopSimulation(id1, id2) {
         simAirBullets.splice(i,1); continue;
       }
       if (enemy.hp > 0 && Math.hypot(enemy.x-b.x, enemy.y-b.y) < enemy.r+b.r) {
-        enemy.hp = Math.max(0, enemy.hp-30);
+        enemy.hp = Math.max(0, enemy.hp-AIR_CANNON_DAMAGE);
         enemy.hitTimer = 10;
         const nx = (enemy.x-b.x)/(Math.hypot(enemy.x-b.x,enemy.y-b.y)||1);
         const ny = (enemy.y-b.y)/(Math.hypot(enemy.x-b.x,enemy.y-b.y)||1);
@@ -2548,7 +2577,7 @@ function runTimeLoopSimulation(id1, id2) {
       }
       if (enemyId === 'timetraveler') {
         if (enemy.airCooldown > 0) enemy.airCooldown--;
-        else { simFireAir(enemy, ttg, simAirBullets); enemy.airCooldown = 120; }
+        else { simFireAir(enemy, ttg, simAirBullets); enemy.airCooldown = AIR_CANNON_COOLDOWN; }
       }
       if (enemyId === 'gunman') simGunman(enemy, ttg, simBullets);
       if (enemyId === 'landmine') simUpdateLandmines(simLandmines, ttg, enemy);
@@ -2566,7 +2595,7 @@ function runTimeLoopSimulation(id1, id2) {
       else {
         const airTarget = (twinB && twinB.hp > 0 && Math.random() < 0.5) ? twinB : enemy;
         simFireAir(ttg, airTarget, simAirBullets);
-        ttg.airCooldown = 120;
+        ttg.airCooldown = AIR_CANNON_COOLDOWN;
       }
 
       if (enemyId === 'darts') simUpdateDarts(simDarts, simTarget, ttg, enemy);
@@ -2634,7 +2663,7 @@ function fireAirCannon(shooter, enemy) {
   const ty = enemy.y + enemy.vy * lead;
   const dx = tx - shooter.x, dy = ty - shooter.y;
   const d = Math.hypot(dx, dy) || 1;
-  const spd = 7;
+  const spd = AIR_CANNON_SPEED;
   airBullets.push({
     x: shooter.x, y: shooter.y,
     vx: (dx/d)*spd, vy: (dy/d)*spd,
@@ -2693,7 +2722,7 @@ function updateTTGFuture(ttgPresent, enemy) {
       ? altTargetsF[Math.floor(Math.random() * altTargetsF.length)]
       : enemy;
     fireAirCannon(ttgFuture, airTarget);
-    ttgFuture.airCooldown = 120;
+    ttgFuture.airCooldown = AIR_CANNON_COOLDOWN;
   }
 }
 
@@ -2737,7 +2766,7 @@ function updateTTGFuture2(ttgPresent, enemy) {
     c.airCooldown--;
   } else if (enemy && enemy.hp > 0) {
     fireAirCannon(c, enemy);
-    c.airCooldown = 120;
+    c.airCooldown = AIR_CANNON_COOLDOWN;
   }
 }
 
@@ -2751,7 +2780,7 @@ function updateAirBulletsSide(targetChar) {
     // ここでは p1char を標的にする
     if (targetChar.hp > 0 && !isFootballInvulnerable(targetChar) && Math.hypot(targetChar.x - b.x, targetChar.y - b.y) < targetChar.r + b.r) {
       if (!tryBoxerDodge(targetChar, b.x, b.y)) {
-        const dmg = 30;
+        const dmg = AIR_CANNON_DAMAGE;
         targetChar.hp = Math.max(0, targetChar.hp - dmg);
         targetChar.hitTimer = 10;
         const nx = (targetChar.x - b.x) / (Math.hypot(targetChar.x - b.x, targetChar.y - b.y) || 1);
@@ -2815,7 +2844,7 @@ function updateAirBullets(defaultEnemy) {
       if (isFootballInvulnerable(enemy)) continue; // 突進中のフットボールガイには当たらない
       if (Math.hypot(enemy.x - b.x, enemy.y - b.y) >= enemy.r + b.r) continue;
       if (!tryBoxerDodge(enemy, b.x, b.y)) {
-        const dmg = 30;
+        const dmg = AIR_CANNON_DAMAGE;
         enemy.hp = Math.max(0, enemy.hp - dmg);
         enemy.hitTimer = 10;
         const nx = (enemy.x - b.x) / (Math.hypot(enemy.x - b.x, enemy.y - b.y) || 1);
@@ -3901,8 +3930,9 @@ function loop() {
   if (p1char.type === 'twins' && p1twinB) {
     moveChar(p1twinB);
     resolveCollision(p1char, p1twinB);
-    // トレーナーガイの召喚キャラ（p2summon）も攻撃対象に含める
-    const enemies = [p2char, p2twinB, p2summon].filter(e => e && e.hp > 0);
+    // トレーナーガイの召喚キャラ（p2summon）・TTGの未来クローンも攻撃対象に含める
+    const p2future = [ttgFuture, ttgFuture2].filter(f => f && f.hp > 0 && f.owner === p2char);
+    const enemies = [p2char, p2twinB, p2summon, ...p2future].filter(e => e && e.hp > 0);
     updateTwins(p1char, p1twinB, enemies);
     // ボクサー/テニス/ガンマンが双子Bも狙えるように
     if (p2char.type === 'boxing') updateBoxing(p2char, p1twinB);
@@ -3915,8 +3945,9 @@ function loop() {
   if (p2char.type === 'twins' && p2twinB) {
     moveChar(p2twinB);
     resolveCollision(p2char, p2twinB);
-    // トレーナーガイの召喚キャラ（p1summon）も攻撃対象に含める
-    const enemies = [p1char, p1twinB, p1summon].filter(e => e && e.hp > 0);
+    // トレーナーガイの召喚キャラ（p1summon）・TTGの未来クローンも攻撃対象に含める
+    const p1future = [ttgFuture, ttgFuture2].filter(f => f && f.hp > 0 && f.owner === p1char);
+    const enemies = [p1char, p1twinB, p1summon, ...p1future].filter(e => e && e.hp > 0);
     updateTwins(p2char, p2twinB, enemies);
     if (p1char.type === 'boxing') updateBoxing(p1char, p2twinB);
     if (p1char.type === 'tennis') updateTennis(p1char, p2twinB);
@@ -3931,9 +3962,9 @@ function loop() {
     const p1friendB = p1char.type === 'twins' ? p1twinB : null;
     const p2friendA = p2char.type === 'twins' ? p2char : null;
     const p2friendB = p2char.type === 'twins' ? p2twinB : null;
-    // トレーナーガイの召喚キャラもソーセージの命中対象に含める
-    const p1enemies = [p2char, p2twinB, p2summon].filter(e => e && e.hp > 0);
-    const p2enemies = [p1char, p1twinB, p1summon].filter(e => e && e.hp > 0);
+    // トレーナーガイの召喚キャラ・TTGの未来クローンもソーセージの命中対象に含める
+    const p1enemies = [p2char, p2twinB, p2summon, ...([ttgFuture, ttgFuture2].filter(f => f && f.hp > 0 && f.owner === p2char))].filter(e => e && e.hp > 0);
+    const p2enemies = [p1char, p1twinB, p1summon, ...([ttgFuture, ttgFuture2].filter(f => f && f.hp > 0 && f.owner === p1char))].filter(e => e && e.hp > 0);
     updateSausages(p1friendA, p1friendB, p1enemies, p2enemies, p2friendA, p2friendB);
   }
 
@@ -3988,7 +4019,7 @@ function loop() {
         : ttgEnemy;
       if (airTarget && airTarget.hp > 0) {
         fireAirCannon(ttg, airTarget);
-        ttg.airCooldown = 120;
+        ttg.airCooldown = AIR_CANNON_COOLDOWN;
       }
     }
     // タイムトラベルチェック：HPが閾値以下になったら過去へ消える
@@ -4016,6 +4047,10 @@ function loop() {
   for (const [futureObj, futEnemy] of futurePairs) {
     if (futEnemy.type === 'boxing') updateBoxing(futEnemy, futureObj);
     if (futEnemy.type === 'tennis') updateTennis(futEnemy, futureObj);
+    if (futEnemy.type === 'football') updateFootball(futEnemy, futureObj);
+    if (futEnemy.type === 'ghost') updateGhost(futEnemy, futureObj);
+    if (futEnemy.type === 'gunman') updateGunman(futEnemy, futureObj);
+    if (futEnemy.type === 'trainer') updateTrainer(futEnemy, futureObj, futEnemy === p1char ? p1summon : p2summon);
     if (futEnemy.hitstop <= 0 && futureObj.hitstop <= 0) resolveCollision(futEnemy, futureObj);
     // ツインズの双子Bとも衝突処理（重なり防止）
     const futEnemyTwinB = (futEnemy === p1char) ? p1twinB : (futEnemy === p2char ? p2twinB : null);
