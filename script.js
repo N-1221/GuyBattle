@@ -171,7 +171,6 @@ const BOMB_PASS_COOLDOWN = 20;     // 受け渡し直後の連続受け渡し防
 let landmines = []; // 地雷ガイが設置した地雷の配列
 const LANDMINE_STOP_TIME = 150;    // 壁に激突してから動けるようになるまでのフレーム数（約2.5秒）
 const LANDMINE_MINE_COOLDOWN = 90; // 動けるようになった後、次の地雷を設置できるようになるまでの追加クールダウン（約1.5秒）
-const LANDMINE_MAX_PER_OWNER = 4;  // 1人が同時に設置できる地雷の上限（超えたら古いものから消える）
 let bullets = []; // ガンマンガイの銃弾の配列
 const PINGPONG_BALL_SPEED = 18.0; // 卓球ボールの基本速度 ※少しだけ上方修正（元は16.0）
 let eggs = []; // トレーナーガイの卵の配列
@@ -180,7 +179,7 @@ const TRAINER_SUMMON_FORMS = ['boxing', 'tennis', 'pingpong', 'gunman', 'landmin
 const TRAINER_EGG_COOLDOWN = 65;   // 召喚キャラがいない間、次の卵を投げるまでの間隔（フレーム）※上方修正で短縮
 const TRAINER_EGG_SPEED = 6.2;     // 卵の飛翔速度
 const TRAINER_EGG_DAMAGE = 38;     // 卵が命中した時のダメージ ※上方修正で増加
-const TRAINER_SUMMON_HP = 550;     // 召喚キャラのHP（本家の1000に対して低め）※上方修正で増加
+const TRAINER_SUMMON_HP = 1000;    // 召喚キャラのHP（本家と同じ1000に戻す）
 const TRAINER_SUMMON_R_SCALE = 0.9; // 召喚キャラの見た目の大きさ（本家より一回り小さく）※上方修正でやや拡大
 
 
@@ -364,6 +363,14 @@ function transformChangeGuy(c, isInitial) {
   }
   c.type = nextForm;
   c.form = nextForm;
+  // 変身前のフォームがフットボールガイの立ち止まり中(windup)などで
+  // vx/vyを0に固定していた場合、その速度(0)がそのままCHANGE_GUY_KEEP_KEYSで
+  // 引き継がれてしまい、新フォームになっても永久に静止したまま動けなくなる
+  // バグがあったため、速度がほぼ0の場合はここでランダムな向きに動き出させる
+  if (Math.hypot(c.vx, c.vy) < 0.05) {
+    const v = randVel(c.baseSpd || rnd(2.2, 3.2));
+    c.vx = v.vx; c.vy = v.vy;
+  }
   // 卓球ガイでなくなったら、自分が発射した卓球玉は残さず消す（打ち返されて所有者表示が変わっていても対象にする）
   if (oldForm === 'pingpong' && nextForm !== 'pingpong') {
     for (let i = pingBalls.length - 1; i >= 0; i--) {
@@ -390,9 +397,13 @@ function moveChar(c) {
     }
   }
   // 変身直後は一定時間、その場に固まって無防備になる（相手に反撃のスキを与える）
+  // ※以前はここで c.vx / c.vy を強制的に0にしていたが、そのままreturnして
+  // 以後の「速度を一定に保つ」処理（下部のspd正規化）を素通りさせてしまい、
+  // スタン明け後も速度0のまま復帰できず、永久に静止し続けるバグがあった。
+  // 移動自体はこのreturnで止まる（座標更新コードまで到達しないため）ので、
+  // vx/vyの値そのものはいじらず、スタン明けに元の速度で動き出せるようにする。
   if (c.transformStun > 0) {
     c.transformStun--;
-    c.vx = 0; c.vy = 0;
     return;
   }
   if (c.hitstop > 0) { c.hitstop--; return; }
@@ -484,6 +495,8 @@ function resolveCollision(a, b) {
 // 回避が成立した場合は true を返すので、呼び出し側はダメージ処理を行わないこと。
 // ============================================================
 function tryBoxerDodge(defender, srcX, srcY) {
+  // 無敵回避は廃止：発動しても被ダメージは防げず、被弾時に少し体をよじる（動く）演出だけになる。
+  // そのため常にfalseを返し、呼び出し側では通常通りダメージ処理が行われる。
   if (!defender || defender.type !== 'boxing') return false;
   if (defender.hp <= 0) return false;
   if (defender.dodgeCooldown > 0) return false;
@@ -492,11 +505,13 @@ function tryBoxerDodge(defender, srcX, srcY) {
   defender.dodgeCooldown = 60;
   const dx = defender.x - srcX, dy = defender.y - srcY;
   const d = Math.hypot(dx, dy) || 1;
-  defender.vx = (dx / d) * 6;
-  defender.vy = (dy / d) * 6;
+  // 勢いよく飛び退く：移動量を強化（旧: 3）
+  defender.vx += (dx / d) * 7;
+  defender.vy += (dy / d) * 7;
+  // knockbackを立てないと1フレームで通常速度に戻ってしまうため、
+  // 少しずつ減速しながら移動する時間を確保する
   defender.knockback = 16;
-  dmgTexts.push({ x: defender.x, y: defender.y - defender.r - 24, text: 'DODGE!', life: 1.0, color: '#7CF7FF' });
-  return true;
+  return false;
 }
 
 function moveTarget() {
@@ -700,28 +715,25 @@ function updateBoxing(attacker, defender) {
     if (!isGhostIntangible(defender)) {
       defender.vx = ndx * 4;
       defender.vy = ndy * 4;
+      attacker.vx = -ndx * 4;
+      attacker.vy = -ndy * 4;
     }
-    attacker.vx = -ndx * 4;
-    attacker.vy = -ndy * 4;
     attacker.punchCooldown = 6; // 連続反発を防ぐ最低限のクールダウン
     return;
   }
 
-  // 躱し判定（被弾側がCDなしなら一定確率で回避）※ゴーストは貫通する存在なので回避しない
+  // 躱しモーション（被弾側がCDなしなら一定確率で発動）※無敵ではなくなったため、
+  // ダメージは防がず、少し体をよじって動くだけの演出にする（ゴーストは貫通する存在なので対象外）
   if (!isGhostIntangible(defender) && defender.dodgeCooldown === 0 && Math.random() < 0.18) {
     defender.dodgeAnimTimer = 18;
     defender.dodgeCooldown = 60;
-    attacker.punchCooldown = isUpperAngle ? 10 : 6;
-    attacker.comboCount = 0; // 躱されたら連続パンチは途切れる
-    // 攻撃者から離れる方向へ後退（ゴーストガイは貫通するので後退させない）
+    // 攻撃者から勢いよく離れる方向へ動く（ダメージは防がない）※移動量を強化（旧: 3）
     const ndx = dx / (dist || 1), ndy = dy / (dist || 1);
-    if (!isGhostIntangible(defender)) {
-      defender.vx = -ndx * 6;
-      defender.vy = -ndy * 6;
-      defender.knockback = 16;
-    }
-    dmgTexts.push({ x: defender.x, y: defender.y - defender.r - 24, text: 'DODGE!', life: 1.0, color: '#7CF7FF' });
-    return;
+    defender.vx += -ndx * 7;
+    defender.vy += -ndy * 7;
+    // knockbackを立てないと1フレームで通常速度に戻ってしまうため、
+    // 少しずつ減速しながら移動する時間を確保する
+    defender.knockback = 16;
   }
 
   if (isUpperAngle) {
@@ -1352,13 +1364,6 @@ function plantLandmine(owner, wallSide) {
   // 置き換わった際にowner===p1summon等の一致判定が崩れ、味方誤爆の原因になるため。
   const side = getTeamSide(owner);
   landmines.push({ x: mx, y: my, r: mineR, owner, side, armTimer: 18, wallSide });
-  // 1人が設置できる地雷の上限を超えたら、古いものから消す
-  const ownerMines = landmines.filter(m => m.owner === owner);
-  while (ownerMines.length > LANDMINE_MAX_PER_OWNER) {
-    const oldest = ownerMines.shift();
-    const idx = landmines.indexOf(oldest);
-    if (idx !== -1) landmines.splice(idx, 1);
-  }
   owner.mineSmileTimer = 150; // 設置後しばらく（約2.5秒）は笑顔画像を表示
   spawnParticles(mx, my, '#8D6E63', 12);
   spawnParticles(mx, my, '#5D4037', 8);
@@ -3474,6 +3479,7 @@ function loop() {
     if (p1summon.type === 'tennis') updateTennis(p1summon, p1SummonTarget);
     if (p1summon.type === 'gunman') updateGunman(p1summon, p1SummonTarget);
     if (p1summon.type === 'pingpong') updatePingpong(p1summon, p1SummonTarget);
+    if (p1summon.type === 'ghost') updateGhost(p1summon, p1SummonTarget);
     // 相手本体からの攻撃も召喚キャラを狙えるようにする
     if (p2char.type === 'boxing') updateBoxing(p2char, p1summon);
     if (p2char.type === 'tennis') updateTennis(p2char, p1summon);
@@ -3503,6 +3509,7 @@ function loop() {
     if (p2summon.type === 'tennis') updateTennis(p2summon, p2SummonTarget);
     if (p2summon.type === 'gunman') updateGunman(p2summon, p2SummonTarget);
     if (p2summon.type === 'pingpong') updatePingpong(p2summon, p2SummonTarget);
+    if (p2summon.type === 'ghost') updateGhost(p2summon, p2SummonTarget);
     if (p1char.type === 'boxing') updateBoxing(p1char, p2summon);
     if (p1char.type === 'tennis') updateTennis(p1char, p2summon);
     if (p1char.type === 'gunman') updateGunman(p1char, p2summon);
