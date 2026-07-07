@@ -171,6 +171,7 @@ const BOMB_PASS_COOLDOWN = 20;     // 受け渡し直後の連続受け渡し防
 let landmines = []; // 地雷ガイが設置した地雷の配列
 const LANDMINE_STOP_TIME = 150;    // 壁に激突してから動けるようになるまでのフレーム数（約2.5秒）
 const LANDMINE_MINE_COOLDOWN = 90; // 動けるようになった後、次の地雷を設置できるようになるまでの追加クールダウン（約1.5秒）
+const LANDMINE_MAX_PER_OWNER = 4;  // 1人が同時に設置できる地雷の上限（超えたら古いものから消える）
 let bullets = []; // ガンマンガイの銃弾の配列
 const PINGPONG_BALL_SPEED = 18.0; // 卓球ボールの基本速度 ※少しだけ上方修正（元は16.0）
 let eggs = []; // トレーナーガイの卵の配列
@@ -179,7 +180,7 @@ const TRAINER_SUMMON_FORMS = ['boxing', 'tennis', 'pingpong', 'gunman', 'landmin
 const TRAINER_EGG_COOLDOWN = 65;   // 召喚キャラがいない間、次の卵を投げるまでの間隔（フレーム）※上方修正で短縮
 const TRAINER_EGG_SPEED = 6.2;     // 卵の飛翔速度
 const TRAINER_EGG_DAMAGE = 38;     // 卵が命中した時のダメージ ※上方修正で増加
-const TRAINER_SUMMON_HP = 1000;    // 召喚キャラのHP（本家と同じ1000に戻す）
+const TRAINER_SUMMON_HP = 550;     // 召喚キャラのHP（本家の1000に対して低め）※上方修正で増加
 const TRAINER_SUMMON_R_SCALE = 0.9; // 召喚キャラの見た目の大きさ（本家より一回り小さく）※上方修正でやや拡大
 
 
@@ -363,14 +364,6 @@ function transformChangeGuy(c, isInitial) {
   }
   c.type = nextForm;
   c.form = nextForm;
-  // 変身前のフォームがフットボールガイの立ち止まり中(windup)などで
-  // vx/vyを0に固定していた場合、その速度(0)がそのままCHANGE_GUY_KEEP_KEYSで
-  // 引き継がれてしまい、新フォームになっても永久に静止したまま動けなくなる
-  // バグがあったため、速度がほぼ0の場合はここでランダムな向きに動き出させる
-  if (Math.hypot(c.vx, c.vy) < 0.05) {
-    const v = randVel(c.baseSpd || rnd(2.2, 3.2));
-    c.vx = v.vx; c.vy = v.vy;
-  }
   // 卓球ガイでなくなったら、自分が発射した卓球玉は残さず消す（打ち返されて所有者表示が変わっていても対象にする）
   if (oldForm === 'pingpong' && nextForm !== 'pingpong') {
     for (let i = pingBalls.length - 1; i >= 0; i--) {
@@ -397,13 +390,9 @@ function moveChar(c) {
     }
   }
   // 変身直後は一定時間、その場に固まって無防備になる（相手に反撃のスキを与える）
-  // ※以前はここで c.vx / c.vy を強制的に0にしていたが、そのままreturnして
-  // 以後の「速度を一定に保つ」処理（下部のspd正規化）を素通りさせてしまい、
-  // スタン明け後も速度0のまま復帰できず、永久に静止し続けるバグがあった。
-  // 移動自体はこのreturnで止まる（座標更新コードまで到達しないため）ので、
-  // vx/vyの値そのものはいじらず、スタン明けに元の速度で動き出せるようにする。
   if (c.transformStun > 0) {
     c.transformStun--;
+    c.vx = 0; c.vy = 0;
     return;
   }
   if (c.hitstop > 0) { c.hitstop--; return; }
@@ -495,8 +484,6 @@ function resolveCollision(a, b) {
 // 回避が成立した場合は true を返すので、呼び出し側はダメージ処理を行わないこと。
 // ============================================================
 function tryBoxerDodge(defender, srcX, srcY) {
-  // 無敵回避は廃止：発動しても被ダメージは防げず、被弾時に少し体をよじる（動く）演出だけになる。
-  // そのため常にfalseを返し、呼び出し側では通常通りダメージ処理が行われる。
   if (!defender || defender.type !== 'boxing') return false;
   if (defender.hp <= 0) return false;
   if (defender.dodgeCooldown > 0) return false;
@@ -505,13 +492,11 @@ function tryBoxerDodge(defender, srcX, srcY) {
   defender.dodgeCooldown = 60;
   const dx = defender.x - srcX, dy = defender.y - srcY;
   const d = Math.hypot(dx, dy) || 1;
-  // 勢いよく飛び退く：移動量を強化（旧: 3）
-  defender.vx += (dx / d) * 7;
-  defender.vy += (dy / d) * 7;
-  // knockbackを立てないと1フレームで通常速度に戻ってしまうため、
-  // 少しずつ減速しながら移動する時間を確保する
+  defender.vx = (dx / d) * 6;
+  defender.vy = (dy / d) * 6;
   defender.knockback = 16;
-  return false;
+  dmgTexts.push({ x: defender.x, y: defender.y - defender.r - 24, text: 'DODGE!', life: 1.0, color: '#7CF7FF' });
+  return true;
 }
 
 function moveTarget() {
@@ -696,9 +681,7 @@ function updateBoxing(attacker, defender) {
   const dist = Math.hypot(dx, dy);
   if (dist >= attacker.r + defender.r + 5) return;
   if (isFootballInvulnerable(defender)) return; // 突進中のフットボールガイにはパンチが当たらない
-  // ゴーストガイには当たり判定はあるが実体がないため貫通する：
-  // パンチのモーション・SE・クールダウン消費は通常通り発生させつつ、
-  // ダメージ・ノックバック・ヒットストップだけを無効化する（下記の各分岐内で個別に処理）
+  if (isGhostIntangible(defender)) return; // ゴーストガイにはパンチが当たってもダメージが入らない（貫通する）
 
   // アッパーカット判定：攻撃者と守備者がほぼ縦に並んでいて、攻撃者が下にいるときのみ発動
   // 縦成分が横成分より大きい（上下方向に近い）＝真上・真下60°以内
@@ -715,49 +698,49 @@ function updateBoxing(attacker, defender) {
     if (!isGhostIntangible(defender)) {
       defender.vx = ndx * 4;
       defender.vy = ndy * 4;
-      attacker.vx = -ndx * 4;
-      attacker.vy = -ndy * 4;
     }
+    attacker.vx = -ndx * 4;
+    attacker.vy = -ndy * 4;
     attacker.punchCooldown = 6; // 連続反発を防ぐ最低限のクールダウン
     return;
   }
 
-  // 躱しモーション（被弾側がCDなしなら一定確率で発動）※無敵ではなくなったため、
-  // ダメージは防がず、少し体をよじって動くだけの演出にする（ゴーストは貫通する存在なので対象外）
-  if (!isGhostIntangible(defender) && defender.dodgeCooldown === 0 && Math.random() < 0.18) {
+  // 躱し判定（被弾側がCDなしなら一定確率で回避）
+  if (defender.dodgeCooldown === 0 && Math.random() < 0.18) {
     defender.dodgeAnimTimer = 18;
     defender.dodgeCooldown = 60;
-    // 攻撃者から勢いよく離れる方向へ動く（ダメージは防がない）※移動量を強化（旧: 3）
+    attacker.punchCooldown = isUpperAngle ? 10 : 6;
+    attacker.comboCount = 0; // 躱されたら連続パンチは途切れる
+    // 攻撃者から離れる方向へ後退（ゴーストガイは貫通するので後退させない）
     const ndx = dx / (dist || 1), ndy = dy / (dist || 1);
-    defender.vx += -ndx * 7;
-    defender.vy += -ndy * 7;
-    // knockbackを立てないと1フレームで通常速度に戻ってしまうため、
-    // 少しずつ減速しながら移動する時間を確保する
-    defender.knockback = 16;
+    if (!isGhostIntangible(defender)) {
+      defender.vx = -ndx * 6;
+      defender.vy = -ndy * 6;
+      defender.knockback = 16;
+    }
+    dmgTexts.push({ x: defender.x, y: defender.y - defender.r - 24, text: 'DODGE!', life: 1.0, color: '#7CF7FF' });
+    return;
   }
 
   if (isUpperAngle) {
     const dmg = 120;
+    defender.hp = Math.max(0, defender.hp - dmg);
+    defender.hitTimer = 15;
     attacker.upperCooldown = 0;
     attacker.punchCooldown = 20;
     attacker.punchAnimTimer = 20;
     attacker.upperAnimTimer = 20;
     attacker.comboCount = 0; // アッパーが入ったら連続パンチのコンボはリセット
     if (!isGhostIntangible(defender)) {
-      defender.hp = Math.max(0, defender.hp - dmg);
-      defender.hitTimer = 15;
       defender.vx = dx / (dist || 1) * 2;
       defender.vy = -30; // 攻撃者が下から打ち上げる
       defender.knockback = 45;
-      // 被弾者のみ長めにストップ（攻撃者は動き続ける）
-      defender.hitstop = 0;
-      spawnParticles(defender.x, defender.y, '#FFD700', 20);
-      spawnParticles(defender.x, defender.y, '#FF6B00', 10);
-      spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#FFD700');
-    } else {
-      // ゴーストは貫通するのでダメージなし。パンチが体を通り抜けるエフェクトだけ出す
-      spawnParticles(defender.x, defender.y, '#B39DDB', 14);
     }
+    // 被弾者のみ長めにストップ（攻撃者は動き続ける）
+    defender.hitstop = 0;
+    spawnParticles(defender.x, defender.y, '#FFD700', 20);
+    spawnParticles(defender.x, defender.y, '#FF6B00', 10);
+    spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#FFD700');
     dmgTexts.push({ x: attacker.x, y: attacker.y - attacker.r - 24, text: 'UPPER!!', life: 1.2, color: '#FFD700' });
   } else {
     // 連続パンチのコンボを進める（一定時間内に次の一発が入らなければ上でリセットされる）
@@ -767,47 +750,41 @@ function updateBoxing(attacker, defender) {
     if (attacker.comboCount >= 3) {
       // 3発目：強烈な一発で「パーン！」と吹っ飛ばす
       const dmg = 45;
+      defender.hp = Math.max(0, defender.hp - dmg);
+      defender.hitTimer = 20;
       attacker.punchCooldown = 24;
       attacker.punchAnimTimer = 14;
       attacker.comboCount = 0; // 吹っ飛ばしたらコンボはリセットして次のチェーンへ
+      spawnParticles(defender.x, defender.y, '#FFD700', 16);
+      spawnParticles(defender.x, defender.y, '#FAC775', 10);
+      spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#FFD700');
+      dmgTexts.push({ x: attacker.x, y: attacker.y - attacker.r - 24, life: 1.2, color: '#FFD700' });
+      // 攻撃者から離れる方向へ大きく吹っ飛ばす（ゴーストガイは貫通するので吹き飛ばさない）
+      const distAB3 = dist || 1;
       if (!isGhostIntangible(defender)) {
-        defender.hp = Math.max(0, defender.hp - dmg);
-        defender.hitTimer = 20;
-        spawnParticles(defender.x, defender.y, '#FFD700', 16);
-        spawnParticles(defender.x, defender.y, '#FAC775', 10);
-        spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#FFD700');
-        dmgTexts.push({ x: attacker.x, y: attacker.y - attacker.r - 24, life: 1.2, color: '#FFD700' });
-        // 攻撃者から離れる方向へ大きく吹っ飛ばす
-        const distAB3 = dist || 1;
         defender.vx = (dx / distAB3) * 22;
         defender.vy = (dy / distAB3) * 22 - 6; // 少し浮かせつつ大きく飛ばす
         defender.knockback = 45;
         defender.hitstop = 12;
-      } else {
-        // ゴーストは貫通するのでダメージなし。エフェクトだけ出す
-        spawnParticles(defender.x, defender.y, '#B39DDB', 16);
       }
     } else {
       // 通常パンチ：被弾者だけ止めて連続パンチを可能に
       const dmg = 45;
+      defender.hp = Math.max(0, defender.hp - dmg);
+      defender.hitTimer = 20;
       attacker.punchCooldown = 12;   // CDを短くしてhitstop中に次が溜まる
       attacker.punchAnimTimer = 10;
       sfxPunch();
+      spawnParticles(defender.x, defender.y, '#FAC775', 12);
+      spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#FAC775');
+      const distAB = dist || 1;
       if (!isGhostIntangible(defender)) {
-        defender.hp = Math.max(0, defender.hp - dmg);
-        defender.hitTimer = 20;
-        spawnParticles(defender.x, defender.y, '#FAC775', 12);
-        spawnDmg(defender.x, defender.y - defender.r - 12, dmg, '#FAC775');
-        const distAB = dist || 1;
         defender.vx = (dx / distAB) * 1.5;  // ノックバック弱め＝その場で止まる
         defender.vy = (dy / distAB) * 1.5;
         defender.knockback = 8;
-        // 被弾者のみヒットストップ（攻撃者はCDが空いたら即次の一発）
-        defender.hitstop = 14;
-      } else {
-        // ゴーストは貫通するのでダメージなし。パンチが体を通り抜けるエフェクトだけ出す
-        spawnParticles(defender.x, defender.y, '#B39DDB', 8);
       }
+      // 被弾者のみヒットストップ（攻撃者はCDが空いたら即次の一発）ゴーストガイは貫通するので停止させない
+      if (!isGhostIntangible(defender)) defender.hitstop = 14;
     }
   }
 }
@@ -1364,6 +1341,13 @@ function plantLandmine(owner, wallSide) {
   // 置き換わった際にowner===p1summon等の一致判定が崩れ、味方誤爆の原因になるため。
   const side = getTeamSide(owner);
   landmines.push({ x: mx, y: my, r: mineR, owner, side, armTimer: 18, wallSide });
+  // 1人が設置できる地雷の上限を超えたら、古いものから消す
+  const ownerMines = landmines.filter(m => m.owner === owner);
+  while (ownerMines.length > LANDMINE_MAX_PER_OWNER) {
+    const oldest = ownerMines.shift();
+    const idx = landmines.indexOf(oldest);
+    if (idx !== -1) landmines.splice(idx, 1);
+  }
   owner.mineSmileTimer = 150; // 設置後しばらく（約2.5秒）は笑顔画像を表示
   spawnParticles(mx, my, '#8D6E63', 12);
   spawnParticles(mx, my, '#5D4037', 8);
@@ -2643,13 +2627,13 @@ function drawChar(c, enemy) {
   // トレイル
   for (let i = 0; i < c.trail.length; i++) {
     const a = (i / c.trail.length) * 0.3;
-    if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis' && c.type !== 'landmine' && c.type !== 'gunman' && c.type !== 'football' && c.type !== 'ghost' && c.type !== 'bomb') {
+    if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis' && c.type !== 'landmine' && c.type !== 'gunman' && c.type !== 'football' && c.type !== 'ghost' && c.type !== 'bomb' && c.type !== 'trainer') {
       ctx.fillStyle = c.color + Math.round(a * 255).toString(16).padStart(2, '0');
       ctx.fill();
     }
   }
-  // 本体（ボクシング・ダーツガイ・タイムトラベラーガイ・ピンポンガイ・フットボールガイ・ゴーストガイ・爆弾ガイは画像を使うので円は描かない）
-  if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis' && c.type !== 'landmine' && c.type !== 'gunman' && c.type !== 'football' && c.type !== 'ghost' && c.type !== 'bomb') {
+  // 本体（ボクシング・ダーツガイ・タイムトラベラーガイ・ピンポンガイ・フットボールガイ・ゴーストガイ・爆弾ガイ・トレーナーガイは画像を使うので円は描かない）
+  if (c.type !== 'boxing' && c.type !== 'darts' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'tennis' && c.type !== 'landmine' && c.type !== 'gunman' && c.type !== 'football' && c.type !== 'ghost' && c.type !== 'bomb' && c.type !== 'trainer') {
     ctx.save();
     ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
     ctx.fillStyle = c.hitTimer > 0 ? c.lightColor : c.color;
@@ -2866,6 +2850,21 @@ function drawChar(c, enemy) {
       ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
       ctx.restore();
     }
+  } else if (c.type === 'trainer') {
+    const img = (TrainerGuy_IMG.complete && TrainerGuy_IMG.naturalWidth > 0) ? TrainerGuy_IMG : null;
+    if (img) {
+      const imgW = img.naturalWidth;
+      const imgH = img.naturalHeight;
+      const scale = (c.r * 2.2) / Math.max(imgW, imgH);
+      const dw = imgW * scale;
+      const dh = imgH * scale;
+      const flipX = enemy && enemy.x < c.x;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      if (flipX) ctx.scale(-1, 1);
+      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+    }
   } else if (c.type !== 'boxing' && c.type !== 'timetraveler' && c.type !== 'pingpong' && c.type !== 'darts' && c.type !== 'landmine' && c.type !== 'gunman') {
     ctx.font = '40px serif';
     ctx.textAlign = 'center';
@@ -2875,7 +2874,7 @@ function drawChar(c, enemy) {
   // ダメージフラッシュ（全キャラ共通：hitTimer中は体を白く塗りつぶす）
   if (c.hitTimer > 0) {
     const flashAlpha = Math.min(1, c.hitTimer / 5);
-    if (c.type === 'boxing' || c.type === 'darts' || c.type === 'timetraveler' || c.type === 'pingpong' || c.type === 'tennis' || c.type === 'landmine' || c.type === 'gunman' || c.type === 'football' || c.type === 'ghost' || c.type === 'bomb') {
+    if (c.type === 'boxing' || c.type === 'darts' || c.type === 'timetraveler' || c.type === 'pingpong' || c.type === 'tennis' || c.type === 'landmine' || c.type === 'gunman' || c.type === 'football' || c.type === 'ghost' || c.type === 'bomb' || c.type === 'trainer') {
       // 画像ベースのキャラ：直前に描画した画像の輪郭（シルエット）に沿って白く塗る
       if (!c._flashCanvas) {
         c._flashCanvas = document.createElement('canvas');
@@ -2937,6 +2936,9 @@ function drawChar(c, enemy) {
         flipX = enemy && enemy.x < c.x;
       } else if (c.type === 'bomb') {
         img = BombGuy_IMG;
+        flipX = enemy && enemy.x < c.x;
+      } else if (c.type === 'trainer') {
+        img = TrainerGuy_IMG;
         flipX = enemy && enemy.x < c.x;
       }
       if (img && img.complete && img.naturalWidth > 0) {
@@ -3479,7 +3481,6 @@ function loop() {
     if (p1summon.type === 'tennis') updateTennis(p1summon, p1SummonTarget);
     if (p1summon.type === 'gunman') updateGunman(p1summon, p1SummonTarget);
     if (p1summon.type === 'pingpong') updatePingpong(p1summon, p1SummonTarget);
-    if (p1summon.type === 'ghost') updateGhost(p1summon, p1SummonTarget);
     // 相手本体からの攻撃も召喚キャラを狙えるようにする
     if (p2char.type === 'boxing') updateBoxing(p2char, p1summon);
     if (p2char.type === 'tennis') updateTennis(p2char, p1summon);
@@ -3509,7 +3510,6 @@ function loop() {
     if (p2summon.type === 'tennis') updateTennis(p2summon, p2SummonTarget);
     if (p2summon.type === 'gunman') updateGunman(p2summon, p2SummonTarget);
     if (p2summon.type === 'pingpong') updatePingpong(p2summon, p2SummonTarget);
-    if (p2summon.type === 'ghost') updateGhost(p2summon, p2SummonTarget);
     if (p1char.type === 'boxing') updateBoxing(p1char, p2summon);
     if (p1char.type === 'tennis') updateTennis(p1char, p2summon);
     if (p1char.type === 'gunman') updateGunman(p1char, p2summon);
@@ -3771,4 +3771,6 @@ const TimeBomb_IMG = new Image();
 TimeBomb_IMG.src = "TimeBomb.png"
 const BombGuy_IMG = new Image();
 BombGuy_IMG.src = "BombGuy.png"
+const TrainerGuy_IMG = new Image();
+TrainerGuy_IMG.src = "TrainerGuy.png"
 buildCharSelect();
