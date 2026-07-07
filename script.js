@@ -20,65 +20,17 @@ const GAME_SCALE = 1.3;
 canvas.width = W * GAME_SCALE;
 canvas.height = H * GAME_SCALE;
 
-// ============================================================
-// 追尾カメラ（対戦者たちを追いかけてズーム/パンする）
-// ============================================================
-const CAMERA_MIN_ZOOM = 1.0;   // 通常時（フィールド全体表示）
-const CAMERA_MAX_ZOOM = 1.7;   // 最大ズーム（キャラ同士が近いとき）
-const CAMERA_PADDING = 130;    // 被写体の周囲に確保する余白（論理px）
-const CAMERA_SMOOTH = 0.08;    // 追従の滑らかさ（0-1、大きいほど素早く追従）
-let camX = W / 2, camY = H / 2, camZoom = CAMERA_MIN_ZOOM;
-
-// 現在のカメラ目標（被写体の中心・ズーム）を計算して、なめらかに追従させる
-function updateCamera() {
-  if (!p1char || !p2char) return;
-  const targets = [p1char, p2char, p1twinB, p2twinB, p1summon, p2summon]
-    .filter(c => c && c.hp > 0);
-  if (targets.length === 0) return;
-
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const c of targets) {
-    minX = Math.min(minX, c.x - c.r);
-    maxX = Math.max(maxX, c.x + c.r);
-    minY = Math.min(minY, c.y - c.r);
-    maxY = Math.max(maxY, c.y + c.r);
-  }
-  const centerX = (minX + maxX) / 2;
-  const centerY = (minY + maxY) / 2;
-  const span = Math.max(maxX - minX, maxY - minY) + CAMERA_PADDING * 2;
-
-  // 被写体が収まる最大のズームを算出（狭いほど大きくズーム、離れるほど1.0に近づく）
-  let targetZoom = W / span;
-  targetZoom = Math.max(CAMERA_MIN_ZOOM, Math.min(CAMERA_MAX_ZOOM, targetZoom));
-
-  // ズームに応じた表示範囲がフィールド内に収まるよう中心をクランプ
-  const halfView = (W / targetZoom) / 2;
-  const targetX = Math.max(halfView, Math.min(W - halfView, centerX));
-  const targetY = Math.max(halfView, Math.min(H - halfView, centerY));
-
-  // なめらかに追従
-  camX += (targetX - camX) * CAMERA_SMOOTH;
-  camY += (targetY - camY) * CAMERA_SMOOTH;
-  camZoom += (targetZoom - camZoom) * CAMERA_SMOOTH;
-}
-
 // ワールド座標(論理px) -> canvasのCSS表示座標（HPバッジ等のDOMオーバーレイ用）
 function worldToScreen(wx, wy) {
   const rectScale = (canvas.clientWidth || canvas.width) / canvas.width;
-  const px = (wx - camX) * GAME_SCALE * camZoom + canvas.width / 2;
-  const py = (wy - camY) * GAME_SCALE * camZoom + canvas.height / 2;
-  return { x: px * rectScale, y: py * rectScale, scale: GAME_SCALE * camZoom * rectScale };
+  const px = wx * GAME_SCALE;
+  const py = wy * GAME_SCALE;
+  return { x: px * rectScale, y: py * rectScale, scale: GAME_SCALE * rectScale };
 }
 
 // ============================================================
-// サウンドエンジン（Web Audio API）
+// サウンドエンジン（mp3再生のみ）
 // ============================================================
-let audioCtx = null;
-function getAudioCtx() {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
-  return audioCtx;
-}
 
 // 効果音全体のマスターボリューム（全体的に下げる場合はここを調整）
 const SFX_MASTER_VOLUME = 0.6;
@@ -215,7 +167,6 @@ function buildCharSelect() {
 
 document.getElementById('cs-start').addEventListener('click', () => {
   if (!selectedP1 || !selectedP2) return;
-  getAudioCtx(); // ユーザー操作でAudioContext初期化
   document.getElementById('char-select').style.display = 'none';
   document.getElementById('battle').style.display = 'flex';
   startBattle(selectedP1, selectedP2);
@@ -279,8 +230,6 @@ function startBattle(id1, id2) {
     bomb = null;
   }
   over = false; running = true;
-  // 追尾カメラをフィールド全体表示にリセット
-  camX = W / 2; camY = H / 2; camZoom = CAMERA_MIN_ZOOM;
   document.getElementById('name1').textContent = def1.emoji + ' ' + def1.name;
   document.getElementById('name2').textContent = def2.emoji + ' ' + def2.name;
   document.getElementById('msg').textContent = '戦闘中...';
@@ -393,6 +342,14 @@ function moveChar(c) {
   if (c.transformStun > 0) {
     c.transformStun--;
     c.vx = 0; c.vy = 0;
+    // 硬直が明けた瞬間に新しい向きの速度を与えておく。
+    // これをしないと、下の通常移動処理では「速度が0でないときだけ
+    // baseSpdに正規化する」ため、vx=vy=0のまま二度と動き出せず
+    // その場に立ち止まり続けるバグになっていた。
+    if (c.transformStun <= 0) {
+      const v = randVel(c.baseSpd);
+      c.vx = v.vx; c.vy = v.vy;
+    }
     return;
   }
   if (c.hitstop > 0) { c.hitstop--; return; }
@@ -3222,13 +3179,8 @@ function draw() {
   if (!p1char || !p2char) return;
 
   // キャンバスは物理的に大きいが、ゲームロジックはW×H(500×500)の論理座標のまま。
-  // GAME_SCALEで画面全体を拡大しつつ、追尾カメラ(camX, camY, camZoom)で
-  // 被写体を中心に捉えるようさらにズーム・パンする
-  ctx.setTransform(
-    GAME_SCALE * camZoom, 0, 0, GAME_SCALE * camZoom,
-    canvas.width / 2 - camX * GAME_SCALE * camZoom,
-    canvas.height / 2 - camY * GAME_SCALE * camZoom
-  );
+  // GAME_SCALEで画面全体を拡大して表示する
+  ctx.setTransform(GAME_SCALE, 0, 0, GAME_SCALE, 0, 0);
   for (const p of particles) {
     ctx.beginPath(); ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
     ctx.fillStyle = p.color + Math.round(p.life * 160).toString(16).padStart(2, '0');
@@ -3410,13 +3362,10 @@ function resultLoop() {
     }
   }
 
-  // 追尾カメラは一旦無効化（常に固定表示）
-  // updateCamera();
-
   // 通常描画（キャラ・エフェクト含む）
   draw();
 
-  // 結果オーバーレイは追尾カメラの影響を受けない固定座標系で重ねて描く
+  // 結果オーバーレイも固定座標系で重ねて描く
   ctx.setTransform(GAME_SCALE, 0, 0, GAME_SCALE, 0, 0);
   const winText = `${resultWinner.emoji} ${resultWinner.name} の勝ち！`;
   ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0, 0, W, H);
@@ -3709,8 +3658,6 @@ function loop() {
     if (timeTravelEffects[i].life <= 0) timeTravelEffects.splice(i, 1);
   }
 
-  // 追尾カメラは一旦無効化（常に固定表示）
-  // updateCamera();
   draw();
   checkWin();
   if (running) animId = requestAnimationFrame(loop);
