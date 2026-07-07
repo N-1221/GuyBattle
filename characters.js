@@ -218,7 +218,7 @@ const ROSTER = [
         x: side === 'p1' ? rnd(60, 180) : rnd(W-180, W-60),
         y: rnd(80, H-80),
         vx: v.vx, vy: v.vy, baseSpd: s,
-        r: 55, hp: 1300, maxHp: 1300,
+        r: 55, hp: 1000, maxHp: 1000,
         hitTimer: 0, hitstop: 0, knockback: 0,
         trail: [],
         name: 'Trainer Guy', emoji: '🧢',
