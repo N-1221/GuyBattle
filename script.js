@@ -103,6 +103,7 @@ let running = false, over = false, animId = null;
 let sc1 = 0, sc2 = 0;
 let p1char, p2char, target;
 let resultWinner = null; // リザルト画面で動き続ける勝者
+let resultLoserSide = null; // リザルト画面で排除する敗者側('p1' or 'p2')
 let darts = [], pingBalls = [], particles = [], dmgTexts = [], airBullets = [], timeTravelEffects = [];
 // ダーツの的が0になった時の放射ダーツ攻撃（3連）の状態管理
 let targetBurstPending = 0, targetBurstTimer = 0, targetBurstOrigin = null, targetBurstOwner = null;
@@ -230,6 +231,7 @@ function startBattle(id1, id2) {
     bomb = null;
   }
   over = false; running = true;
+  resultLoserSide = null;
   document.getElementById('name1').textContent = def1.emoji + ' ' + def1.name;
   document.getElementById('name2').textContent = def2.emoji + ' ' + def2.name;
   document.getElementById('msg').textContent = '戦闘中...';
@@ -243,6 +245,7 @@ function startBattle(id1, id2) {
 function doReset() {
   running = false; over = false;
   resultWinner = null;
+  resultLoserSide = null;
   cancelAnimationFrame(animId);
   darts = []; pingBalls = []; particles = []; dmgTexts = []; airBullets = []; timeTravelEffects = []; sausages = [];
   landmines = []; bullets = []; eggs = []; p1summon = null; p2summon = null;
@@ -601,11 +604,14 @@ function updateGhost(attacker, defender) {
   if (attacker.hp <= 0 || defender.hp <= 0 || attacker.transformStun > 0) return;
   const dist = Math.hypot(defender.x - attacker.x, defender.y - attacker.y);
   const overlapping = dist < attacker.r + defender.r;
+  // クールダウンは「防御側ごと」に持たせる（attacker側で一括管理すると、TTGの本体と
+  // 未来の分身を同時に攻撃するケースで片方の判定がもう片方のクールダウンをリセットしてしまい、
+  // ダメージ間隔が本来より短くなるバグになるため）
   if (overlapping && !isFootballInvulnerable(defender)) {
-    if (attacker.ghostDamageCooldown > 0) {
-      attacker.ghostDamageCooldown--;
+    if (defender.ghostDamageCooldown > 0) {
+      defender.ghostDamageCooldown--;
     } else {
-      attacker.ghostDamageCooldown = GHOST_DAMAGE_TICK;
+      defender.ghostDamageCooldown = GHOST_DAMAGE_TICK;
       if (!tryBoxerDodge(defender, attacker.x, attacker.y)) {
         defender.hp = Math.max(0, defender.hp - GHOST_DAMAGE);
         defender.hitTimer = 6;
@@ -615,7 +621,7 @@ function updateGhost(attacker, defender) {
     }
   } else {
     // 離れたら次に重なった時すぐダメージが入るようクールダウンをリセット
-    attacker.ghostDamageCooldown = 0;
+    defender.ghostDamageCooldown = 0;
   }
 }
 
@@ -824,7 +830,7 @@ function updateDartProjectiles() {
       } else {
         dmg = dmgPool[Math.floor(Math.random() * dmgPool.length)];
       }
-      // 本物のダーツ501ルールと同様：残りHPを超過(バースト)する場合はそのダメージはなかったことにする
+      // 本物のダーツ#301ルールと同様：残りHPを超過(バースト)する場合はそのダメージはなかったことにする
       if (dmg > remaining) {
         spawnParticles(target.x, target.y, '#999999', 5);
         dmgTexts.push({ x: target.x, y: target.y - 30, text: 'BUST!', life: 1.0, color: '#AAAAAA' });
@@ -1298,13 +1304,7 @@ function plantLandmine(owner, wallSide) {
   // 置き換わった際にowner===p1summon等の一致判定が崩れ、味方誤爆の原因になるため。
   const side = getTeamSide(owner);
   landmines.push({ x: mx, y: my, r: mineR, owner, side, armTimer: 18, wallSide });
-  // 1人が設置できる地雷の上限を超えたら、古いものから消す
-  const ownerMines = landmines.filter(m => m.owner === owner);
-  while (ownerMines.length > LANDMINE_MAX_PER_OWNER) {
-    const oldest = ownerMines.shift();
-    const idx = landmines.indexOf(oldest);
-    if (idx !== -1) landmines.splice(idx, 1);
-  }
+  // 個数制限なし：設置した地雷はすべて残る
   owner.mineSmileTimer = 150; // 設置後しばらく（約2.5秒）は笑顔画像を表示
   spawnParticles(mx, my, '#8D6E63', 12);
   spawnParticles(mx, my, '#5D4037', 8);
@@ -1665,6 +1665,8 @@ function runTimeLoopSimulation(id1, id2) {
       gunCooldown: 0, overheatCooldown: 0, aimDir: 1,
       // Twins
       sausageCooldown: 0, throwTimer: 0,
+      // Ghost
+      ghostDamageCooldown: 0,
     };
   }
 
@@ -1701,6 +1703,8 @@ function runTimeLoopSimulation(id1, id2) {
   }
 
   function simResolve(a, b) {
+    // ゴーストガイ：本物同様、誰とぶつかっても弾かれず貫通する（ダメージはsimUpdateGhostで別途処理）
+    if (a.type === 'ghost' || b.type === 'ghost') return;
     const dx = b.x - a.x, dy = b.y - a.y;
     const dist = Math.hypot(dx, dy) || 1;
     const minD = a.r + b.r;
@@ -2056,7 +2060,26 @@ function runTimeLoopSimulation(id1, id2) {
     }
   }
 
+  // Ghost攻撃シミュレーション（重なっている間ダメージを与え続ける。本物同様の間隔・威力）
+  function simUpdateGhost(attacker, defender) {
+    if (attacker.hp <= 0 || defender.hp <= 0) return;
+    const dist = Math.hypot(defender.x - attacker.x, defender.y - attacker.y);
+    const overlapping = dist < attacker.r + defender.r;
+    if (overlapping) {
+      if (defender.ghostDamageCooldown > 0) {
+        defender.ghostDamageCooldown--;
+      } else {
+        defender.ghostDamageCooldown = GHOST_DAMAGE_TICK;
+        defender.hp = Math.max(0, defender.hp - GHOST_DAMAGE);
+        defender.hitTimer = 6;
+      }
+    } else {
+      defender.ghostDamageCooldown = 0;
+    }
+  }
+
   // 的（ダーツ用ターゲット）のシミュレーション
+
   function makeSimTarget() {
     const tv = { vx: (Math.random()-0.5)*6, vy: (Math.random()-0.5)*6 };
     return { x: SIM_W/2, y: SIM_H/2, vx: tv.vx, vy: tv.vy, r: 25 };
@@ -2117,6 +2140,7 @@ function runTimeLoopSimulation(id1, id2) {
         else { simFireAir(enemy, ttg, simAirBullets); enemy.airCooldown = AIR_CANNON_COOLDOWN; }
       }
       if (enemyId === 'gunman') simGunman(enemy, ttg, simBullets);
+      if (enemyId === 'ghost') simUpdateGhost(enemy, ttg);
       if (enemyId === 'landmine') simUpdateLandmines(simLandmines, ttg, enemy);
       if (enemyId === 'gunman') simUpdateBullets(simBullets, ttg, enemy);
       if (enemyId === 'bomb') simUpdateBomb(simBomb, ttg, enemy);
@@ -2400,6 +2424,9 @@ function updateAirBullets(defaultEnemy) {
 }
 
 function drawAirBullet(b) {
+  const fade = 1 - b.age / b.maxAge;
+  const angle = Math.atan2(b.vy, b.vx);
+
   // トレイル
   for (let i = 0; i < b.trail.length; i++) {
     const a = (i / b.trail.length) * 0.2;
@@ -2408,22 +2435,51 @@ function drawAirBullet(b) {
     ctx.fillStyle = `rgba(0,229,255,${a})`;
     ctx.fill();
   }
-  // 空気弾本体（半透明の衝撃波）
-  const fade = 1 - b.age / b.maxAge;
-  // 外輪
-  ctx.beginPath(); ctx.arc(b.x, b.y, b.r + 4, 0, Math.PI * 2);
-  ctx.strokeStyle = `rgba(0,229,255,${fade * 0.5})`;
-  ctx.lineWidth = 3; ctx.stroke();
-  // 中心
-  const grad = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
-  grad.addColorStop(0, `rgba(255,255,255,${fade * 0.9})`);
-  grad.addColorStop(0.4, `rgba(0,229,255,${fade * 0.7})`);
-  grad.addColorStop(1, `rgba(0,188,212,${fade * 0.1})`);
-  ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-  ctx.fillStyle = grad; ctx.fill();
-  // 圧縮波紋
-  ctx.beginPath(); ctx.arc(b.x, b.y, b.r * 0.55, 0, Math.PI * 2);
-  ctx.strokeStyle = `rgba(224,247,250,${fade * 0.7})`; ctx.lineWidth = 2; ctx.stroke();
+
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(angle);
+
+  // 後方に残る圧縮空気の余韻リング（発射時の名残。進むにつれ薄く小さくなる）
+  for (let i = 1; i <= 2; i++) {
+    const t = i * 0.4;
+    const ex = -b.r * (1.6 + t * 2.4);
+    const shrink = 1 - t * 0.3;
+    ctx.beginPath();
+    ctx.ellipse(ex, 0, b.r * 0.5 * shrink, b.r * shrink, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(0,229,255,${fade * (0.32 - i * 0.1)})`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  // 空気弾本体：進行方向から見た「渦輪（air vortex ring）」を横から見た形＝扁平な輪
+  ctx.beginPath();
+  ctx.ellipse(0, 0, b.r * 0.6, b.r, 0, 0, Math.PI * 2);
+  const coreGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, b.r);
+  coreGrad.addColorStop(0, `rgba(6,26,32,${fade * 0.25})`);
+  coreGrad.addColorStop(0.55, `rgba(0,229,255,${fade * 0.25})`);
+  coreGrad.addColorStop(0.85, `rgba(255,255,255,${fade * 0.95})`);
+  coreGrad.addColorStop(1, `rgba(0,188,212,${fade * 0.5})`);
+  ctx.fillStyle = coreGrad;
+  ctx.fill();
+
+  // 輪の縁を強調する明るいストローク
+  ctx.beginPath();
+  ctx.ellipse(0, 0, b.r * 0.6, b.r, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(224,247,250,${fade * 0.9})`;
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  // 先端の突風（進行方向に伸びる圧力の尖り）
+  ctx.beginPath();
+  ctx.moveTo(b.r * 0.9, 0);
+  ctx.lineTo(b.r * 0.35, -b.r * 0.4);
+  ctx.lineTo(b.r * 0.35, b.r * 0.4);
+  ctx.closePath();
+  ctx.fillStyle = `rgba(0,229,255,${fade * 0.35})`;
+  ctx.fill();
+
+  ctx.restore();
 }
 
 function drawTimeTravelEffect(e) {
@@ -2454,7 +2510,7 @@ function drawTTGFutureObj(c) {
     if (timetravel_IMG.complete && timetravel_IMG.naturalWidth > 0) {
       const imgW = timetravel_IMG.naturalWidth;
       const imgH = timetravel_IMG.naturalHeight;
-      const scale = (c.r * 2.5) / Math.max(imgW, imgH);
+      const scale = (c.r * 2.2) / Math.max(imgW, imgH);
       const dw = imgW * scale;
       const dh = imgH * scale;
       ctx.save();
@@ -2698,7 +2754,9 @@ function drawChar(c, enemy) {
       if (flipX) ctx.scale(-1, 1);
       if (isShot) {
         // ショット画像（腕を広げて横に大きい）は高さ基準でスケールして体の大きさを保つ
-        const sizeBoost = 1.15;
+        // ※以前は1.15倍のブーストをかけていたが、他キャラのショット/攻撃モーション画像と
+        //   比べて目立って大きく見えたため等倍に調整
+        const sizeBoost = 1.0;
         const scale = (c.r * 2.2 * sizeBoost) / imgH;
         const dw = imgW * scale, dh = imgH * scale;
         ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
@@ -2872,7 +2930,8 @@ function drawChar(c, enemy) {
         flipX = enemy && enemy.x < c.x;
         if (isShot) {
           // ショット画像（高さ基準でスケール）
-          sizeBoost = 1.15;
+          // ※他キャラのショット/攻撃モーション画像と大きさを揃えるため等倍に調整
+          sizeBoost = 1.0;
           useHeightBasis = true;
         } else {
           // 通常画像は胴体（頭〜腰）の実サイズを基準にスケール・位置調整する
@@ -3194,8 +3253,9 @@ function draw() {
   for (const m of landmines) drawLandmine(m);
   for (const b of bullets) drawBullet(b);
   for (const e of eggs) drawEgg(e);
-  drawChar(p1char, p2char);
-  drawChar(p2char, p1char);
+  // リザルト画面(over===true)では、敗者側のキャラクター本体は描画しない
+  if (!(over && resultLoserSide === 'p1')) drawChar(p1char, p2char);
+  if (!(over && resultLoserSide === 'p2')) drawChar(p2char, p1char);
   // ツインズBを描画
   if (p1twinB) drawTwinsChar(p1twinB, p2char);
   if (p2twinB) drawTwinsChar(p2twinB, p1char);
@@ -3280,6 +3340,40 @@ function renderHpBadges(chars) {
 }
 
 // ============================================================
+// リザルト画面：敗者側キャラクター・関連オブジェクトの排除
+// ============================================================
+// 飛翔物などのオブジェクトの持ち主（味方）側を判定する（owner/originのどちらの
+// プロパティ名を使っているオブジェクトにも対応）
+function getArtifactSide(item) {
+  const holder = item.owner || item.origin || item;
+  return getTeamSide(holder);
+}
+
+function clearLoserSideArtifacts(loserSide) {
+  if (!loserSide) return;
+
+  // 敗者側が発射した飛翔物・設置物をすべて取り除く
+  darts = darts.filter(d => getArtifactSide(d) !== loserSide);
+  pingBalls = pingBalls.filter(b => getArtifactSide(b) !== loserSide);
+  airBullets = airBullets.filter(a => getArtifactSide(a) !== loserSide);
+  sausages = sausages.filter(s => getArtifactSide(s) !== loserSide);
+  landmines = landmines.filter(m => getArtifactSide(m) !== loserSide);
+  bullets = bullets.filter(b => getArtifactSide(b) !== loserSide);
+  eggs = eggs.filter(e => getArtifactSide(e) !== loserSide);
+
+  // 敗者側の双子（ツインズ）・召喚キャラ（トレーナーガイ）を排除
+  if (loserSide === 'p1') { p1twinB = null; p1summon = null; }
+  else { p2twinB = null; p2summon = null; }
+
+  // 敗者側が持ち主の未来のタイムトラベラーガイも排除
+  if (ttgFuture && getTeamSide(ttgFuture.owner) === loserSide) ttgFuture = null;
+  if (ttgFuture2 && getTeamSide(ttgFuture2.owner) === loserSide) ttgFuture2 = null;
+
+  // 敗者側が持ち主の爆弾ガイの爆弾も排除
+  if (bomb && getTeamSide(bomb.holder || bomb.owner) === loserSide) bomb = null;
+}
+
+// ============================================================
 // 勝敗判定
 // ============================================================
 function checkWin() {
@@ -3326,14 +3420,23 @@ function checkWin() {
   if (p1wins) sc1++; else sc2++;
   document.getElementById('sc1').textContent = sc1;
   document.getElementById('sc2').textContent = sc2;
-  const winText = `${winner.emoji} ${winner.name} の勝ち！`;
-  document.getElementById('msg').textContent = winText;
+  document.getElementById('msg').textContent = '';
   document.getElementById('btn-toggle').textContent = '↺ もう一度';
   spawnParticles(winner.x, winner.y, '#FAC775', 30);
   sfxWin();
 
   // 勝者キャラをグローバルに保持してリザルトループで使う
   resultWinner = winner;
+  resultLoserSide = p1wins ? 'p2' : 'p1';
+
+  // 負けたキャラクター・その双子/召喚キャラ/未来のTTG・関連する飛翔物を
+  // すべてリザルト画面から排除する
+  clearLoserSideArtifacts(resultLoserSide);
+
+  // タイムトラベラーガイの「過去へ消える」演出エフェクトは、resultLoopでは
+  // 寿命(life)が減少しない（=一度発生すると消えず残り続けてしまう）ため、
+  // リザルト画面へ移行するタイミングで明示的に消しておく
+  timeTravelEffects = [];
 
   // running は止めず、リザルト専用ループに切り替える
   running = false;
@@ -3360,20 +3463,15 @@ function resultLoop() {
       dmgTexts[i].y -= 0.8; dmgTexts[i].life -= 0.025;
       if (dmgTexts[i].life <= 0) dmgTexts.splice(i, 1);
     }
+    // タイムトラベル演出エフェクト更新（万一残っていても自然に消えるように）
+    for (let i = timeTravelEffects.length - 1; i >= 0; i--) {
+      timeTravelEffects[i].life -= 0.0055;
+      if (timeTravelEffects[i].life <= 0) timeTravelEffects.splice(i, 1);
+    }
   }
 
   // 通常描画（キャラ・エフェクト含む）
   draw();
-
-  // 結果オーバーレイも固定座標系で重ねて描く
-  ctx.setTransform(GAME_SCALE, 0, 0, GAME_SCALE, 0, 0);
-  const winText = `${resultWinner.emoji} ${resultWinner.name} の勝ち！`;
-  ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = '#FAC775'; ctx.font = 'bold 26px sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(winText, W / 2, H / 2 - 16);
-  ctx.fillStyle = '#ddd'; ctx.font = '15px sans-serif';
-  ctx.fillText('もう一度 を押してリマッチ', W / 2, H / 2 + 18);
 
   animId = requestAnimationFrame(resultLoop);
 }
@@ -3658,9 +3756,48 @@ function loop() {
     if (timeTravelEffects[i].life <= 0) timeTravelEffects.splice(i, 1);
   }
 
+  resolveAllOverlaps();
   draw();
   checkWin();
   if (running) animId = requestAnimationFrame(loop);
+}
+
+// ============================================================
+// めり込み防止（フレーム最終パス）
+// ============================================================
+// 上のループ内では、キャラ同士の衝突（resolveCollision）が組み合わせごとに
+// バラバラのタイミングで一度ずつしか実行されない。3体以上が同時に絡む場面
+// （召喚キャラ・双子・未来のTTGなど）では1回の押し戻しだけでは全ての重なりが
+// 解消しきらず、結果的にキャラ同士がめり込んで見えることがあった。
+// また、壁際でキャラ同士が押し合うと resolveCollision の押し出しによって
+// 壁の外（境界の外側）まで押し出されてしまい、次のフレームの moveChar で
+// 補正されるまでの間だけ壁にめり込んで見えることがあった。
+// → フレームの最後に、生存中の全キャラを対象として重なり解消を数回繰り返し
+//    収束させ、最後に壁の内側へ強制的にクランプする。
+function getAllLiveBodies() {
+  return [p1char, p2char, p1twinB, p2twinB, p1summon, p2summon, ttgFuture, ttgFuture2]
+    .filter(c => c && c.hp > 0);
+}
+
+function resolveAllOverlaps() {
+  const bodies = getAllLiveBodies();
+  const ITER = 3; // 3体以上絡んだ重なりも収束するよう複数回繰り返す
+  for (let iter = 0; iter < ITER; iter++) {
+    for (let i = 0; i < bodies.length; i++) {
+      for (let j = i + 1; j < bodies.length; j++) {
+        const a = bodies[i], b = bodies[j];
+        if (a.hitstop > 0 && b.hitstop > 0) continue; // 両者ヒットストップ中は既存仕様どおり押し戻しをスキップ
+        resolveCollision(a, b); // ゴースト・突進中フットボールの特殊扱いは関数内で考慮済み
+      }
+    }
+  }
+  // 位置だけを壁の内側へ強制的にクランプ（速度はmoveChar側の処理に任せて変更しない）
+  for (const c of bodies) {
+    if (c.x - c.r < 0) c.x = c.r;
+    if (c.x + c.r > W) c.x = W - c.r;
+    if (c.y - c.r < 0) c.y = c.r;
+    if (c.y + c.r > H) c.y = H - c.r;
+  }
 }
 
 // ============================================================
