@@ -6,15 +6,20 @@ body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; dis
 /* キャラ選択 */
 #char-select { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; }
 #char-select h2 { font-size: 16px; font-weight: 600; color: #eee; }
+.cs-mode { display: flex; gap: 8px; }
+.cs-mode-btn { font-size: 13px; padding: 7px 22px; border-radius: 20px; border: 1.5px solid #444; background: #2a2a2a; color: #999; cursor: pointer; font-weight: 700; transition: border-color 0.15s, background 0.15s, color 0.15s; }
+.cs-mode-btn:hover { background: #333; }
+.cs-mode-btn.active { border-color: #4A9EFF; background: rgba(74,158,255,0.18); color: #fff; }
 .cs-row { display: flex; gap: 24px; align-items: flex-start; max-width: 100%; }
 .cs-panel { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0; }
 .cs-label { font-size: 12px; color: #aaa; font-weight: 500; }
 .cs-cards { display: flex; flex-direction: column; gap: 6px; width: 100%; }
-.cs-card { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: 10px; border: 1.5px solid #444; background: #2a2a2a; cursor: pointer; font-size: 13px; color: #eee; transition: border-color 0.15s, background 0.15s; min-width: 150px; }
+.cs-card { position: relative; display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: 10px; border: 1.5px solid #444; background: #2a2a2a; cursor: pointer; font-size: 13px; color: #eee; transition: border-color 0.15s, background 0.15s; min-width: 150px; }
 .cs-card:hover { background: #333; }
 .cs-card.selected { border-color: #4A9EFF; background: rgba(74,158,255,0.15); }
 .cs-card .cs-emoji { font-size: 22px; }
 .cs-card .cs-name { font-weight: 600; font-size: 13px; }
+.cs-order-badge { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%; background: #4A9EFF; color: #fff; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 2px #1a1a1a; }
 .cs-vs { font-size: 20px; font-weight: 700; color: #666; padding-top: 32px; }
 #cs-start { font-size: 14px; padding: 8px 32px; border-radius: 8px; border: none; background: #4A9EFF; color: #fff; cursor: pointer; font-weight: 600; opacity: 0.4; pointer-events: none; transition: opacity 0.2s; }
 #cs-start.ready { opacity: 1; pointer-events: auto; }
@@ -29,6 +34,12 @@ body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; dis
 .s-box { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .s-num { font-size: 15px; font-weight: 700; color: #fff; min-width: 18px; text-align: center; }
 #msg { font-size: 12px; color: #eafcff; }
+.sb-teams { display: flex; justify-content: space-between; width: 100%; margin-top: 8px; }
+.team-icons { display: flex; gap: 4px; }
+.team-icons:empty { display: none; }
+.team-icon { font-size: 17px; padding: 2px 5px; border-radius: 6px; opacity: 0.9; }
+.team-icon.ko { opacity: 0.25; filter: grayscale(1); }
+.team-icon.active { background: rgba(255,255,255,0.22); box-shadow: 0 0 0 1.5px #fff inset; }
 /* canvasは実サイズ(650x650)固定ではなく、画面幅に合わせて縮小表示する（内部の描画座標系はJS側でclientWidthとの比率から自動調整される） */
 canvas { border: 8px solid #000; border-radius: 0; display: block; background: #1FA5CB; max-width: 100%; height: auto; }
 #arena-wrap { position: relative; max-width: 100%; }

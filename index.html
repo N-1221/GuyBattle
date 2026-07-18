@@ -12,6 +12,10 @@
   <!-- キャラ選択 -->
   <div id="char-select">
     <h2>キャラクター選択</h2>
+    <div class="cs-mode" id="cs-mode">
+      <button class="cs-mode-btn active" data-mode="1">1 vs 1</button>
+      <button class="cs-mode-btn" data-mode="3">3 vs 3</button>
+    </div>
     <div class="cs-row">
       <div class="cs-panel">
         <div class="cs-cards" id="cs-p1"></div>
@@ -36,6 +40,10 @@
         <span class="s-num" id="sc1">0</span>
         <span id="msg">— vs —</span>
         <span class="s-num" id="sc2">0</span>
+      </div>
+      <div class="sb-teams">
+        <div class="team-icons" id="team1-icons"></div>
+        <div class="team-icons" id="team2-icons"></div>
       </div>
     </div>
     <div id="arena-wrap">

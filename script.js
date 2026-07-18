@@ -104,7 +104,20 @@ let sc1 = 0, sc2 = 0;
 let p1char, p2char, target;
 let resultWinner = null; // リザルト画面で動き続ける勝者
 let resultLoserSide = null; // リザルト画面で排除する敗者側('p1' or 'p2')
-let darts = [], pingBalls = [], particles = [], dmgTexts = [], airBullets = [], timeTravelEffects = [];
+let darts = [], pingBalls = [], particles = [], dmgTexts = [], airBullets = [], timeTravelEffects = [], shockwaves = [];
+// 画面シェイク（爆発など強い衝撃の演出用）
+let screenShake = { time: 0, power: 0 };
+function triggerShake(power, time) {
+  // 既存のシェイクより強い場合のみ上書き（複数エフェクトが重なっても弱まらないように）
+  if (power >= screenShake.power || screenShake.time <= 0) {
+    screenShake.power = power;
+    screenShake.time = time;
+  }
+}
+// 拡大しながら消えるリング状の衝撃波エフェクトを生成
+function spawnShockwave(x, y, color, maxR, life) {
+  shockwaves.push({ x, y, r: 0, maxR, life, maxLife: life, color });
+}
 // ダーツの的が0になった時の放射ダーツ攻撃（3連）の状態管理
 let targetBurstPending = 0, targetBurstTimer = 0, targetBurstOrigin = null, targetBurstOwner = null;
 const TARGET_BURST_TOTAL = 3;     // 放射攻撃の連射回数
@@ -138,65 +151,132 @@ const TRAINER_SUMMON_R_SCALE = 0.9; // 召喚キャラの見た目の大きさ�
 
 
 // ============================================================
-// キャラ選択UI
+// キャラ選択UI（1vs1 / 3vs3 対応）
 // ============================================================
-let selectedP1 = null, selectedP2 = null;
+// 「？」＝ランダム選択カード。実キャラではなくプレースホルダーのIDとして
+// selectedP1/selectedP2に入り、対戦開始時に実際のキャラへ解決される。
+if (typeof ROSTER !== 'undefined' && !ROSTER.some(r => r.id === 'random')) {
+  ROSTER.push({ id: 'random', emoji: '❓', name: 'ランダム' });
+}
+// ROSTERの中から実キャラ（'random'以外）を1体ランダムに選ぶ。
+// excludeIdsに含まれるIDはなるべく避ける（同じチーム内でのランダム被りを防ぐため）。
+function pickRandomRosterId(excludeIds) {
+  const real = ROSTER.filter(r => r.id !== 'random');
+  const pool = real.filter(r => !excludeIds.includes(r.id));
+  const finalPool = pool.length > 0 ? pool : real; // 候補が尽きたら重複も許容
+  return finalPool[Math.floor(Math.random() * finalPool.length)].id;
+}
+// 選択済み配列（'random'を含みうる）を、実際に対戦で使うキャラID配列へ変換する
+function resolveTeamLineup(ids) {
+  const resolved = [];
+  for (const id of ids) {
+    resolved.push(id === 'random' ? pickRandomRosterId(resolved) : id);
+  }
+  return resolved;
+}
+let TEAM_SIZE = 1; // 1 or 3。チームの人数（1vs1なら1、3vs3なら3）
+let selectedP1 = [], selectedP2 = []; // 選択順＝出撃順（配列の中身はROSTERのid）
+// 現在進行中のバトルのチーム編成（開始ボタンを押した時点でselectedP1/2からコピー）
+let team1 = [], team2 = [];
+let team1Idx = 0, team2Idx = 0; // 各チームで現在出撃中のメンバーのインデックス
+
+function updateCsStartReady() {
+  document.getElementById('cs-start').classList.toggle(
+    'ready', selectedP1.length === TEAM_SIZE && selectedP2.length === TEAM_SIZE
+  );
+}
 
 function buildCharSelect() {
   ['p1', 'p2'].forEach(player => {
     const container = document.getElementById('cs-' + player);
     container.innerHTML = '';
+    const selectedArr = player === 'p1' ? selectedP1 : selectedP2;
     ROSTER.forEach(def => {
       const card = document.createElement('div');
       card.className = 'cs-card';
-      // 前回の選択を復元
-      if ((player === 'p1' && selectedP1 === def.id) || (player === 'p2' && selectedP2 === def.id)) {
-        card.classList.add('selected');
-      }
-      card.innerHTML = `<span class="cs-emoji">${def.emoji}</span><div class="cs-name">${def.name}</div>`;
+      // 3vs3では同じキャラが複数枠に入りうるので、該当する全ての選択順（1始まり）を集める
+      const orderIdxs = [];
+      selectedArr.forEach((id, i) => { if (id === def.id) orderIdxs.push(i + 1); });
+      if (orderIdxs.length > 0) card.classList.add('selected');
+      card.innerHTML = `<span class="cs-emoji">${def.emoji}</span><div class="cs-name">${def.name}</div>` +
+        (TEAM_SIZE > 1 && orderIdxs.length > 0 ? `<span class="cs-order-badge">${orderIdxs.join(',')}</span>` : '');
       card.addEventListener('click', () => {
-        container.querySelectorAll('.cs-card').forEach(c => c.classList.remove('selected'));
-        card.classList.add('selected');
-        if (player === 'p1') selectedP1 = def.id;
-        else selectedP2 = def.id;
-        document.getElementById('cs-start').classList.toggle('ready', !!(selectedP1 && selectedP2));
+        const arr = player === 'p1' ? selectedP1 : selectedP2;
+        if (TEAM_SIZE > 1) {
+          // 3vs3：重複選択OK。クリックのたびに1枠追加し、上限に達していたら一番古い選択を外す
+          if (arr.length >= TEAM_SIZE) arr.shift();
+          arr.push(def.id);
+        } else {
+          // 1vs1：従来通りトグル式（同じキャラをもう一度クリックすると解除）
+          const idx = arr.indexOf(def.id);
+          if (idx !== -1) {
+            arr.splice(idx, 1);
+          } else {
+            if (arr.length >= TEAM_SIZE) arr.shift();
+            arr.push(def.id);
+          }
+        }
+        buildCharSelect(); // 番号バッジ等を再描画するため全体を作り直す
+        updateCsStartReady();
+      });
+      // 右クリック：3vs3のとき、このキャラの選択を1枠分だけ解除する（重複選択の取り消し用）
+      card.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        if (TEAM_SIZE <= 1) return;
+        const arr = player === 'p1' ? selectedP1 : selectedP2;
+        // 一番新しく選ばれた枠（配列の後ろ側）から1つだけ取り消す
+        for (let i = arr.length - 1; i >= 0; i--) {
+          if (arr[i] === def.id) { arr.splice(i, 1); break; }
+        }
+        buildCharSelect();
+        updateCsStartReady();
       });
       container.appendChild(card);
     });
   });
 }
 
+// モード切替（1vs1 / 3vs3）
+document.querySelectorAll('.cs-mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const m = parseInt(btn.dataset.mode, 10);
+    if (m === TEAM_SIZE) return;
+    TEAM_SIZE = m;
+    selectedP1 = []; selectedP2 = []; // 人数が変わるので選択はリセット
+    document.querySelectorAll('.cs-mode-btn').forEach(b => b.classList.toggle('active', b === btn));
+    buildCharSelect();
+    updateCsStartReady();
+  });
+});
+
 document.getElementById('cs-start').addEventListener('click', () => {
-  if (!selectedP1 || !selectedP2) return;
+  if (selectedP1.length !== TEAM_SIZE || selectedP2.length !== TEAM_SIZE) return;
   document.getElementById('char-select').style.display = 'none';
   document.getElementById('battle').style.display = 'flex';
-  startBattle(selectedP1, selectedP2);
+  team1 = resolveTeamLineup(selectedP1); // '？'（ランダム）はここで実キャラIDに解決される
+  team2 = resolveTeamLineup(selectedP2);
+  team1Idx = 0; team2Idx = 0;
+  startBattle(team1[0], team2[0]);
+  renderTeamHud();
 });
 
 // ============================================================
 // バトル開始
 // ============================================================
-function startBattle(id1, id2) {
-  const def1 = ROSTER.find(r => r.id === id1);
-  const def2 = ROSTER.find(r => r.id === id2);
-
+// タイムトラベラー・ダーツの的・ツインズ双子B・爆弾ガイの爆弾など、
+// 「両者の組み合わせ」に応じて決まる共有ギミックをまとめて初期化する。
+// 3vs3の途中交代（1体倒れて次のメンバーが出てくる時）にも使い回すため関数化してある。
+// id1/id2 にはROSTERのid、またはp1char.type/p2char.type（生存キャラの現在のタイプ）を渡す。
+function setupSharedMechanics(id1, id2) {
   // タイムトラベラーが含まれる場合、時間ループシミュレーションを実行
   const hasTTG = (id1 === 'timetraveler' || id2 === 'timetraveler');
-  let loopX = null;
-  if (hasTTG) {
-    loopX = runTimeLoopSimulation(id1, id2);
-  }
-
-  p1char = def1.makeChar('p1');
-  p2char = def2.makeChar('p2');
-
-  // タイムループ収束値を設定（TTG vs TTG の場合は両方にそれぞれシミュレーション）
   if (hasTTG) {
     if (id1 === 'timetraveler' && id2 === 'timetraveler') {
       // 両方TTG：それぞれ相手キャラとしてシミュレーション
       p1char.timeLoopX = runTimeLoopSimulation('timetraveler', 'timetraveler');
       p2char.timeLoopX = runTimeLoopSimulation('timetraveler', 'timetraveler');
     } else {
+      const loopX = runTimeLoopSimulation(id1, id2);
       const ttgChar = (p1char.type === 'timetraveler') ? p1char : p2char;
       ttgChar.timeLoopX = loopX;
     }
@@ -209,14 +289,11 @@ function startBattle(id1, id2) {
   } else {
     target = null;
   }
-  darts = []; pingBalls = []; particles = []; dmgTexts = []; airBullets = []; timeTravelEffects = []; sausages = [];
-  landmines = []; bullets = []; eggs = []; p1summon = null; p2summon = null;
-  targetBurstPending = 0; targetBurstTimer = 0; targetBurstOrigin = null; targetBurstOwner = null;
-  ttgFuture = null;
-  ttgFuture2 = null;
+
   // ツインズの双子Bを初期化
   p1twinB = (p1char.type === 'twins') ? p1char.twinB : null;
   p2twinB = (p2char.type === 'twins') ? p2char.twinB : null;
+
   // 爆弾ガイの爆弾を初期化（最初は爆弾ガイ自身が保持。まだタイマーは始動しない）
   if (p1char.type === 'bomb' || p2char.type === 'bomb') {
     bomb = {
@@ -230,10 +307,40 @@ function startBattle(id1, id2) {
   } else {
     bomb = null;
   }
+}
+
+// フィールド上の飛翔物・演出・一時状態を一掃する（新しいラウンド開始時に呼ぶ）
+// keepLandmines=true の場合、既に設置されている地雷はそのまま残す（3vs3の途中交代時用）
+function clearRoundState(keepLandmines) {
+  darts = []; pingBalls = []; particles = []; dmgTexts = []; airBullets = []; timeTravelEffects = []; sausages = [];
+  bullets = []; eggs = []; p1summon = null; p2summon = null;
+  targetBurstPending = 0; targetBurstTimer = 0; targetBurstOrigin = null; targetBurstOwner = null;
+  ttgFuture = null;
+  ttgFuture2 = null;
+  if (!keepLandmines) landmines = [];
+}
+
+// スコアボードの名前表示・見出しを更新
+function updateFighterNames() {
+  const d1 = ROSTER.find(r => r.id === p1char.type) || { emoji: p1char.emoji, name: p1char.name };
+  const d2 = ROSTER.find(r => r.id === p2char.type) || { emoji: p2char.emoji, name: p2char.name };
+  document.getElementById('name1').textContent = (p1char.emoji || d1.emoji) + ' ' + (p1char.name || d1.name);
+  document.getElementById('name2').textContent = (p2char.emoji || d2.emoji) + ' ' + (p2char.name || d2.name);
+}
+
+function startBattle(id1, id2) {
+  const def1 = ROSTER.find(r => r.id === id1);
+  const def2 = ROSTER.find(r => r.id === id2);
+
+  p1char = def1.makeChar('p1');
+  p2char = def2.makeChar('p2');
+
+  setupSharedMechanics(id1, id2);
+  clearRoundState();
+
   over = false; running = true;
   resultLoserSide = null;
-  document.getElementById('name1').textContent = def1.emoji + ' ' + def1.name;
-  document.getElementById('name2').textContent = def2.emoji + ' ' + def2.name;
+  updateFighterNames();
   document.getElementById('msg').textContent = '戦闘中...';
   document.getElementById('btn-toggle').textContent = '⏸ 一時停止';
   animId = requestAnimationFrame(loop);
@@ -247,6 +354,7 @@ function doReset() {
   resultWinner = null;
   resultLoserSide = null;
   cancelAnimationFrame(animId);
+  clearMsgResetTimer();
   darts = []; pingBalls = []; particles = []; dmgTexts = []; airBullets = []; timeTravelEffects = []; sausages = [];
   landmines = []; bullets = []; eggs = []; p1summon = null; p2summon = null;
   targetBurstPending = 0; targetBurstTimer = 0; targetBurstOrigin = null; targetBurstOwner = null;
@@ -254,13 +362,12 @@ function doReset() {
   ttgFuture2 = null;
   p1twinB = null; p2twinB = null;
   bomb = null;
+  team1 = []; team2 = []; team1Idx = 0; team2Idx = 0;
   document.getElementById('battle').style.display = 'none';
   document.getElementById('char-select').style.display = 'flex';
   // 前回の選択を保持したままUIを再構築
   buildCharSelect();
-  if (selectedP1 && selectedP2) {
-    document.getElementById('cs-start').classList.add('ready');
-  }
+  updateCsStartReady();
 }
 
 document.getElementById('btn-reset').addEventListener('click', doReset);
@@ -282,6 +389,80 @@ document.addEventListener('keydown', e => {
     document.getElementById('btn-toggle').click();
   }
 });
+
+// ============================================================
+// 3vs3：チーム交代・チームHUD表示
+// ============================================================
+let msgResetTimer = null;
+function clearMsgResetTimer() {
+  if (msgResetTimer) { clearTimeout(msgResetTimer); msgResetTimer = null; }
+}
+// メッセージを一時的に表示し、一定時間後に「戦闘中...」へ戻す
+function flashMsg(text, ms) {
+  clearMsgResetTimer();
+  document.getElementById('msg').textContent = text;
+  msgResetTimer = setTimeout(() => {
+    msgResetTimer = null;
+    if (running && !over) document.getElementById('msg').textContent = '戦闘中...';
+  }, ms);
+}
+
+// 敗北した側（loserSide: 'p1' or 'p2'）のチームにまだ控えメンバーがいれば、
+// 次のメンバーを出撃させて試合を続行する。控えがいなければ何もせずfalseを返す
+// （＝呼び出し側でそのままチーム全滅として試合終了処理を行う）。
+function spawnNextTeammate(loserSide) {
+  const isP1 = loserSide === 'p1';
+  const lineup = isP1 ? team1 : team2;
+  const nextIdx = (isP1 ? team1Idx : team2Idx) + 1;
+  if (nextIdx >= lineup.length) return false; // 控えなし＝チーム全滅
+
+  if (isP1) team1Idx = nextIdx; else team2Idx = nextIdx;
+
+  const newId = lineup[nextIdx];
+  const def = ROSTER.find(r => r.id === newId);
+  const newChar = def.makeChar(loserSide);
+
+  const survivor = isP1 ? p2char : p1char;
+
+  if (isP1) p1char = newChar; else p2char = newChar;
+
+  // 生存キャラは位置・速度・HPを含め完全にそのまま続行させる（リスポーンさせない）
+
+  // 新しい組み合わせで共有ギミック（TTG/ダーツの的/ツインズ/爆弾）を再セットアップ
+  setupSharedMechanics(isP1 ? newId : survivor.type, isP1 ? survivor.type : newId);
+  clearRoundState(true); // 地雷はそのまま残す
+
+  over = false;
+  updateFighterNames();
+  flashMsg((isP1 ? 'P1' : 'P2') + ' KO！ 次のキャラが登場！', 1400);
+  renderTeamHud();
+  return true;
+}
+
+// チームの残りメンバー・出撃状況をスコアボードにアイコンで表示
+function renderTeamHud() {
+  const wrap1 = document.getElementById('team1-icons');
+  const wrap2 = document.getElementById('team2-icons');
+  if (!wrap1 || !wrap2) return;
+  if (TEAM_SIZE <= 1 || team1.length <= 1) {
+    wrap1.style.display = 'none'; wrap2.style.display = 'none';
+    return;
+  }
+  wrap1.style.display = 'flex'; wrap2.style.display = 'flex';
+  const render = (wrap, lineup, idx) => {
+    wrap.innerHTML = '';
+    lineup.forEach((id, i) => {
+      const def = ROSTER.find(r => r.id === id);
+      const span = document.createElement('span');
+      span.className = 'team-icon' + (i < idx ? ' ko' : '') + (i === idx ? ' active' : '');
+      span.textContent = def.emoji;
+      wrap.appendChild(span);
+    });
+  };
+  render(wrap1, team1, team1Idx);
+  render(wrap2, team2, team2Idx);
+}
+
 
 // ============================================================
 // Changing Guy：HPが200減るたびに別のガイへランダム変身する
@@ -734,13 +915,13 @@ function updateDarts_shoot(attacker) {
   if (attacker.dartCooldown > 0) { attacker.dartCooldown--; return; }
   attacker.burstCount = 3;
   attacker.burstInterval = 0;
-  attacker.dartCooldown = 75;
+  attacker.dartCooldown = 115; // 3連射の間隔（フレーム）※長め化（元は75）
 }
 function updateDarts_burst(attacker) {
   if (!attacker.burstCount || attacker.burstCount <= 0) return;
   if (attacker.burstInterval > 0) { attacker.burstInterval--; return; }
   if (!target) return;
-  const spd = 5.0;
+  const spd = 8.0; // ダーツの飛翔速度 ※高速化（元は5.0）
   const dx = target.x - attacker.x, dy = target.y - attacker.y;
   const d = Math.hypot(dx, dy) || 1;
   const spawnDist = attacker.r + 12; // 自分の体の外側から発射し、自己反射バグを防ぐ
@@ -1190,9 +1371,17 @@ function updateBomb() {
     bomb.exploded = true;
     h.hp = Math.max(0, h.hp - 1000);
     h.hitTimer = 24;
-    spawnParticles(h.x, h.y, '#FF7043', 35);
-    spawnParticles(h.x, h.y, '#FFEB3B', 20);
-    spawnParticles(h.x, h.y, '#212121', 18);
+    // 爆炎パーティクル（色を増やし量も強化して派手な爆発に）
+    spawnParticles(h.x, h.y, '#FFFFFF', 14);
+    spawnParticles(h.x, h.y, '#FFEB3B', 26);
+    spawnParticles(h.x, h.y, '#FF7043', 40);
+    spawnParticles(h.x, h.y, '#FF5722', 24);
+    spawnParticles(h.x, h.y, '#212121', 20);
+    // 拡大する衝撃波リングを二重に発生
+    spawnShockwave(h.x, h.y, '#FFEB3B', 90, 1);
+    spawnShockwave(h.x, h.y, '#FF7043', 140, 1.2);
+    // 画面全体を大きく揺らす
+    triggerShake(14, 22);
     spawnDmg(h.x, h.y - h.r - 12, 1000, '#FF5722');
   }
 }
@@ -1757,13 +1946,13 @@ function runTimeLoopSimulation(id1, id2) {
   function simDartsShoot(attacker, simDarts, simTarget) {
     if (attacker.hp <= 0) return;
     if (attacker.dartCooldown > 0) { attacker.dartCooldown--; return; }
-    attacker.burstCount = 3; attacker.burstInterval = 0; attacker.dartCooldown = 75;
+    attacker.burstCount = 3; attacker.burstInterval = 0; attacker.dartCooldown = 115;
   }
   function simDartsBurst(attacker, simDarts, simTarget) {
     if (!attacker.burstCount || attacker.burstCount <= 0) return;
     if (attacker.burstInterval > 0) { attacker.burstInterval--; return; }
     if (!simTarget) return;
-    const spd = 5.0;
+    const spd = 8.0;
     const dx = simTarget.x - attacker.x, dy = simTarget.y - attacker.y;
     const d = Math.hypot(dx,dy)||1;
     simDarts.push({ x: attacker.x, y: attacker.y, vx: dx/d*spd, vy: dy/d*spd, stuck: false, stuckTimer: 0, owner: attacker });
@@ -3200,7 +3389,22 @@ function draw() {
 
   // キャンバスは物理的に大きいが、ゲームロジックはW×H(500×500)の論理座標のまま。
   // GAME_SCALEで画面全体を拡大して表示する
-  ctx.setTransform(GAME_SCALE, 0, 0, GAME_SCALE, 0, 0);
+  // 画面シェイク中は、残り時間に応じて減衰するランダムなオフセットを加える（爆発などの演出用）
+  let shakeX = 0, shakeY = 0;
+  if (screenShake.time > 0) {
+    const shakeMul = screenShake.power * (screenShake.time / 22);
+    shakeX = rnd(-shakeMul, shakeMul);
+    shakeY = rnd(-shakeMul, shakeMul);
+  }
+  ctx.setTransform(GAME_SCALE, 0, 0, GAME_SCALE, shakeX * GAME_SCALE, shakeY * GAME_SCALE);
+  for (const s of shockwaves) {
+    const alpha = Math.max(0, Math.min(1, s.life));
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.strokeStyle = s.color + Math.round(alpha * 220).toString(16).padStart(2, '0');
+    ctx.lineWidth = 4 * alpha + 1;
+    ctx.stroke();
+  }
   for (const p of particles) {
     ctx.beginPath(); ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
     ctx.fillStyle = p.color + Math.round(p.life * 160).toString(16).padStart(2, '0');
@@ -3306,6 +3510,7 @@ function renderHpBadges(chars) {
 // 飛翔物などのオブジェクトの持ち主（味方）側を判定する（owner/originのどちらの
 // プロパティ名を使っているオブジェクトにも対応）
 function getArtifactSide(item) {
+  if (item && item.side) return item.side; // 地雷は設置時の所属サイドを直接持っているので優先する
   const holder = item.owner || item.origin || item;
   return getTeamSide(holder);
 }
@@ -3357,6 +3562,14 @@ function checkWin() {
 
   if (p1alive && p2alive) return;
   if (over) return;
+
+  // どちらかの側が力尽きた場合、チームにまだ控えがいれば交代して試合を続行する
+  if (!p1alive) {
+    if (spawnNextTeammate('p1')) return;
+  } else if (!p2alive) {
+    if (spawnNextTeammate('p2')) return;
+  }
+
   over = true;
 
   const p1wins = p1alive && !p2alive;
@@ -3715,6 +3928,16 @@ function loop() {
   for (let i = timeTravelEffects.length - 1; i >= 0; i--) {
     timeTravelEffects[i].life -= 0.0055; // 約3秒で消える
     if (timeTravelEffects[i].life <= 0) timeTravelEffects.splice(i, 1);
+  }
+  for (let i = shockwaves.length - 1; i >= 0; i--) {
+    const s = shockwaves[i];
+    s.life -= 1 / (s.maxLife * 60); // maxLife秒でちょうど消えるように減衰
+    s.r = s.maxR * (1 - Math.max(0, s.life) / s.maxLife); // 進行度に応じて拡大
+    if (s.life <= 0) shockwaves.splice(i, 1);
+  }
+  if (screenShake.time > 0) {
+    screenShake.time--;
+    if (screenShake.time <= 0) screenShake.power = 0;
   }
 
   resolveAllOverlaps();
