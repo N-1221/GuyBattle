@@ -14,18 +14,13 @@ const canvas = document.getElementById('arena');
 const ctx = canvas.getContext('2d');
 // ゲームロジック上の論理サイズ（この値を変えるとキャラ・フィールドの比率が変わってしまうため固定）
 const W = 500, H = 500;
-// 画面全体を拡大する倍率。実際のキャンバス解像度だけを引き伸ばし、
-// 描画時にctx側で拡大することでキャラ・フィールドの比率はそのまま保つ
-const GAME_SCALE = 1.3;
-canvas.width = W * GAME_SCALE;
-canvas.height = H * GAME_SCALE;
+canvas.width = W;
+canvas.height = H;
 
 // ワールド座標(論理px) -> canvasのCSS表示座標（HPバッジ等のDOMオーバーレイ用）
 function worldToScreen(wx, wy) {
   const rectScale = (canvas.clientWidth || canvas.width) / canvas.width;
-  const px = wx * GAME_SCALE;
-  const py = wy * GAME_SCALE;
-  return { x: px * rectScale, y: py * rectScale, scale: GAME_SCALE * rectScale };
+  return { x: wx * rectScale, y: wy * rectScale, scale: rectScale };
 }
 
 // ============================================================
@@ -102,6 +97,9 @@ function sfxWin() {
 let running = false, over = false, animId = null;
 let sc1 = 0, sc2 = 0;
 let p1char, p2char, target;
+// 3v3で片方のキャラが力尽きた後、次のキャラが登場するまでの間隔（フレーム数、約60fps基準）
+const RESPAWN_DELAY_FRAMES = 180; // 約3秒
+let pendingRespawn = null; // { side: 'p1'|'p2', timer: number } 待機中はnullでない
 let resultWinner = null; // リザルト画面で動き続ける勝者
 let resultLoserSide = null; // リザルト画面で排除する敗者側('p1' or 'p2')
 let darts = [], pingBalls = [], particles = [], dmgTexts = [], airBullets = [], timeTravelEffects = [], shockwaves = [];
@@ -407,6 +405,13 @@ function flashMsg(text, ms) {
   }, ms);
 }
 
+// 敗北した側（loserSide）にまだ控えメンバーがいるとき、即座に交代させず、
+// RESPAWN_DELAY_FRAMES（約3秒）待ってから次のメンバーを登場させる
+function startRespawnCountdown(loserSide) {
+  pendingRespawn = { side: loserSide, timer: RESPAWN_DELAY_FRAMES };
+  flashMsg((loserSide === 'p1' ? 'P1' : 'P2') + ' KO！ 次のキャラが登場します...', RESPAWN_DELAY_FRAMES * (1000 / 60));
+}
+
 // 敗北した側（loserSide: 'p1' or 'p2'）のチームにまだ控えメンバーがいれば、
 // 次のメンバーを出撃させて試合を続行する。控えがいなければ何もせずfalseを返す
 // （＝呼び出し側でそのままチーム全滅として試合終了処理を行う）。
@@ -574,7 +579,12 @@ function moveChar(c) {
     if (spd > 0) { c.vx = (c.vx / spd) * target; c.vy = (c.vy / spd) * target; }
   } else {
     const spd = Math.hypot(c.vx, c.vy);
-    if (spd > 0) { c.vx = (c.vx / spd) * c.baseSpd; c.vy = (c.vy / spd) * c.baseSpd; }
+    // フットボールガイの突進中(charging)は、baseSpdではなく突進用の速度を維持する
+    // （そうしないと毎フレームここでbaseSpdに巻き戻され、突進開始直後の1フレームしか速くならないバグになる）
+    const targetSpd = (c.type === 'football' && c.footballState === 'charging' && c.footballChargeSpd)
+      ? c.footballChargeSpd
+      : c.baseSpd;
+    if (spd > 0) { c.vx = (c.vx / spd) * targetSpd; c.vy = (c.vy / spd) * targetSpd; }
   }
 }
 
@@ -686,7 +696,7 @@ function spawnDmg(x, y, dmg, color) {
 // ============================================================
 const FOOTBALL_WINDUP_TIME = 100;   // 突進前に立ち止まる時間（フレーム数、約1.7秒）
 const FOOTBALL_CHARGE_MAX_TIME = 240; // 突進の最大継続時間（壁に届かなかった場合の保険）
-const FOOTBALL_CHARGE_SPEED_MUL = 8.5; // 突進時の速度倍率（baseSpd比）※強化前は7.5
+const FOOTBALL_CHARGE_SPEED_MUL = 30; // 突進時の速度倍率（baseSpd比）※強化前は7.5→8.5→10.5→15
 const FOOTBALL_CHARGE_COOLDOWN = 110;  // 突進終了後、次のwindupが始まるまでの時間
 const FOOTBALL_DAMAGE_NEAR = 200;   // 突進開始時、相手がすぐ近くにいた場合のダメージ（至近距離＝最大）※強化前は180
 const FOOTBALL_DAMAGE_FAR = 75;     // 突進開始時、相手が遠くにいた場合のダメージ（遠距離＝最小）※強化前は60
@@ -729,6 +739,7 @@ function updateFootball(attacker, defender) {
       const chargeSpd = attacker.baseSpd * FOOTBALL_CHARGE_SPEED_MUL;
       attacker.vx = (dx / d) * chargeSpd;
       attacker.vy = (dy / d) * chargeSpd;
+      attacker.footballChargeSpd = chargeSpd; // moveChar側の速度正規化で通常速度に巻き戻されないよう保持
       attacker.footballState = 'charging';
       attacker.footballTimer = FOOTBALL_CHARGE_MAX_TIME;
       attacker.footballHitDone = false;
@@ -738,13 +749,15 @@ function updateFootball(attacker, defender) {
   } else if (attacker.footballState === 'charging') {
     // 突進中：相手に当たったら一度だけダメージ＋ノックバック（突進自体は止めず継続）
     // ダメージは突進開始時の距離に応じて変動（近距離から突っ込むほど高威力、遠距離だと威力が下がる）
+    let hitLanded = false; // 敵にヒットしたら突進を打ち切るためのフラグ
     if (!attacker.footballHitDone && defender.hp > 0) {
       const dist = Math.hypot(defender.x - attacker.x, defender.y - attacker.y);
       if (dist < attacker.r + defender.r) {
         attacker.footballHitDone = true; // 回避されても同じ突進で再ヒット判定はしない
         if (isGhostIntangible(defender)) {
-          // ゴーストガイには当たってもダメージが入らない（貫通する）
+          // ゴーストガイには当たってもダメージが入らない（貫通するので突進も止めない）
         } else {
+          hitLanded = true; // 実際にヒットしたので突進を終了させる
           const dmg = calcFootballDamage(attacker.footballChargeStartDist || 0);
           defender.hp = Math.max(0, defender.hp - dmg);
           defender.hitTimer = 12;
@@ -759,10 +772,10 @@ function updateFootball(attacker, defender) {
         }
       }
     }
-    // 壁に到達するまで突進を止めない（moveChar側で座標が壁際にクランプされているかで判定）
+    // 壁に到達するか敵にヒットしたら突進を止める（moveChar側で座標が壁際にクランプされているかで判定）
     const atWall = attacker.x <= attacker.r + 0.5 || attacker.x >= W - attacker.r - 0.5 ||
                    attacker.y <= attacker.r + 0.5 || attacker.y >= H - attacker.r - 0.5;
-    if (atWall || --attacker.footballTimer <= 0) {
+    if (atWall || hitLanded || --attacker.footballTimer <= 0) {
       // 突進終了：通常の徘徊速度に戻し、しばらく経ったらまた立ち止まる
       attacker.footballState = 'wander';
       attacker.footballCooldown = FOOTBALL_CHARGE_COOLDOWN;
@@ -3381,14 +3394,12 @@ function drawDart(d) {
 }
 
 function draw() {
-  // 物理キャンバス全体をクリア（カメラがズームしていてもフィールド外に隙間ができないように）
+  // 物理キャンバス全体をクリア
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#1FA5CB'; ctx.fillRect(0, 0, canvas.width, canvas.height);
   if (!p1char || !p2char) return;
 
-  // キャンバスは物理的に大きいが、ゲームロジックはW×H(500×500)の論理座標のまま。
-  // GAME_SCALEで画面全体を拡大して表示する
   // 画面シェイク中は、残り時間に応じて減衰するランダムなオフセットを加える（爆発などの演出用）
   let shakeX = 0, shakeY = 0;
   if (screenShake.time > 0) {
@@ -3396,7 +3407,7 @@ function draw() {
     shakeX = rnd(-shakeMul, shakeMul);
     shakeY = rnd(-shakeMul, shakeMul);
   }
-  ctx.setTransform(GAME_SCALE, 0, 0, GAME_SCALE, shakeX * GAME_SCALE, shakeY * GAME_SCALE);
+  ctx.setTransform(1, 0, 0, 1, shakeX, shakeY);
   for (const s of shockwaves) {
     const alpha = Math.max(0, Math.min(1, s.life));
     ctx.beginPath();
@@ -3543,6 +3554,8 @@ function clearLoserSideArtifacts(loserSide) {
 // 勝敗判定
 // ============================================================
 function checkWin() {
+  if (pendingRespawn) return; // 次のキャラ登場を待機中は判定しない
+
   const p1isTTG = p1char.type === 'timetraveler';
   const p2isTTG = p2char.type === 'timetraveler';
 
@@ -3563,11 +3576,11 @@ function checkWin() {
   if (p1alive && p2alive) return;
   if (over) return;
 
-  // どちらかの側が力尽きた場合、チームにまだ控えがいれば交代して試合を続行する
+  // どちらかの側が力尽きた場合、チームにまだ控えがいれば少し間を置いてから交代して試合を続行する
   if (!p1alive) {
-    if (spawnNextTeammate('p1')) return;
+    if ((team1Idx + 1) < team1.length) { startRespawnCountdown('p1'); return; }
   } else if (!p2alive) {
-    if (spawnNextTeammate('p2')) return;
+    if ((team2Idx + 1) < team2.length) { startRespawnCountdown('p2'); return; }
   }
 
   over = true;
@@ -3655,6 +3668,21 @@ function resultLoop() {
 // ============================================================
 function loop() {
   if (!running) return;
+
+  // 次のキャラ登場を待機中：キャラの動き・攻撃判定などは一切進めず、
+  // 経過時間のカウントダウンと描画のみ行う
+  if (pendingRespawn) {
+    pendingRespawn.timer--;
+    draw();
+    if (pendingRespawn.timer <= 0) {
+      const side = pendingRespawn.side;
+      pendingRespawn = null;
+      spawnNextTeammate(side);
+    }
+    if (running) animId = requestAnimationFrame(loop);
+    return;
+  }
+
   moveChar(p1char);
   moveChar(p2char);
   // 両者ともヒットストップ中のときのみ押し戻しをスキップ（片方だけなら通す）
