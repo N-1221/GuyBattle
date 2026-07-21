@@ -271,7 +271,8 @@ const ROSTER = [
         footballState: 'wander',   // 'wander'（通常移動）→ 'windup'（立ち止まり）→ 'charging'（突進）
         footballTimer: 0,          // 現在の状態が終わるまでの残りフレーム数
         footballCooldown: Math.floor(rnd(90, 150)), // 次のwindupが始まるまでの残りフレーム数
-        footballHitDone: false     // 今回の突進で既にヒットしたか
+        footballHitDone: false,    // 今回の突進で既にヒットしたか
+        footballTackleImgTimer: 0  // タックル画像を表示し続ける残りフレーム数（突進終了後も少し表示を延長する）
       };
     }
   },

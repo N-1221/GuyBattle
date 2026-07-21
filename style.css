@@ -1,7 +1,7 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html { overflow-x: hidden; }
 body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; display: flex; justify-content: center; padding: 16px; min-height: 100vh; overflow-x: hidden; }
-#app { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; max-width: 700px; }
+#app { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; max-width: 1400px; }
 
 /* キャラ選択 */
 #char-select { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; }
@@ -26,8 +26,8 @@ body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; dis
 #cs-start.ready:hover { background: #2e86e8; }
 
 /* バトル画面 */
-#battle { display: none; flex-direction: column; align-items: center; gap: 0; width: 100%; }
-#scoreboard { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 650px; max-width: 100%; box-sizing: border-box; background: #1FA5CB; color: #fff; padding: 16px 18px 10px; }
+#battle { display: none; flex-direction: column; align-items: center; gap: 0; width: min(94vw, 82vh, 900px); }
+#scoreboard { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 100%; box-sizing: border-box; background: #1FA5CB; color: #fff; padding: 16px 18px 10px; }
 .sb-title { text-align: center; font-size: clamp(18px, 6.5vw, 30px); font-weight: 900; letter-spacing: 0.3px; line-height: 1.2; font-family: 'Arial Black', 'Hiragino Sans', system-ui, sans-serif; color: #fff; text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 3px 3px 0 #000, 0 4px 8px rgba(0,0,0,0.35); }
 .sb-vs { font-weight: 900; }
 .sb-sub { display: flex; align-items: center; gap: 14px; font-size: 12px; color: #eafcff; margin-top: 6px; }
@@ -40,9 +40,10 @@ body { background: #1a1a1a; color: #eee; font-family: system-ui, sans-serif; dis
 .team-icon { font-size: 17px; padding: 2px 5px; border-radius: 6px; opacity: 0.9; }
 .team-icon.ko { opacity: 0.25; filter: grayscale(1); }
 .team-icon.active { background: rgba(255,255,255,0.22); box-shadow: 0 0 0 1.5px #fff inset; }
-/* canvasは実サイズ(650x650)固定ではなく、画面幅に合わせて縮小表示する（内部の描画座標系はJS側でclientWidthとの比率から自動調整される） */
-canvas { border: 8px solid #000; border-radius: 0; display: block; background: #1FA5CB; max-width: 100%; height: auto; }
-#arena-wrap { position: relative; max-width: 100%; }
+/* canvasは固定サイズではなく、#battleの幅(画面のvw/vhに応じて可変)いっぱいに広がる。
+   縦横比は内部解像度500x500のまま保たれ、実際の描画スケールはJS側でclientWidthとの比率から自動調整される */
+canvas { border: 8px solid #000; border-radius: 0; display: block; background: #1FA5CB; width: 100%; height: auto; }
+#arena-wrap { position: relative; width: 100%; }
 #hp-badges { position: absolute; left: 8px; top: 8px; right: 8px; bottom: 8px; overflow: visible; pointer-events: none; z-index: 999; }
 .hp-badge { position: absolute; overflow: visible; }
 .hp-badge svg { display: block; overflow: visible; }
